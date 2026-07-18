@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robomaster-s1-lab-sdk"
+version = "0.1.0"
+description = "RoboMaster S1 SDK-style API implemented through Lab mode"
+requires-python = ">=3.10"
+authors = [
+  { name = "Tatsuya Ishikawa" }
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["robomaster*", "robomaster_lab_sdk*"]

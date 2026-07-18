@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robomaster-s1-wifi-sdk"
+version = "0.1.0"
+description = "Experimental RoboMaster S1 Wi-Fi SDK using the Windows App compatible protocol"
+requires-python = ">=3.10"
+authors = [
+  { name = "Tatsuya Ishikawa" }
+]
+dependencies = [
+  "qrcode[pil]>=7.4",
+]
+
+[project.optional-dependencies]
+app = [
+  "av>=11",
+  "pillow>=10",
+  "sounddevice>=0.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["robomaster_s1_sdk*", "robomaster*"]

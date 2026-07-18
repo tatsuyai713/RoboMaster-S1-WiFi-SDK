@@ -148,6 +148,18 @@ sequenceDiagram
     PC->>S1: DUSS version/parameter query
     PC->>S1: DUSS 0x48/01, 0x48/03, 0x48/04
     PC->>S1: neutral 0x01/04
+
+    opt 初回pairing broadcastから入った場合
+        PC->>S1: DUSS 0x3f/04 payload 000300
+        PC->>S1: DUSS 0x3f/77 payload 010300
+        PC->>S1: DUSS 0x3f/77 payload 010501
+        PC->>PC: control socketを閉じる
+        PC->>PC: outer session = 前session + 1
+        PC->>S1: UDP/10607 preconnect
+        S1-->>PC: preconnect ACK
+        PC->>S1: Connect setupを再送
+    end
+
     Note over PC,S1: Connect完了。Soloには自動遷移しない。
 
     opt Solo ON
@@ -860,7 +872,7 @@ distance = 0x85 = 133 m
 time = 0x01ab = 427 sec = 7.12 min
 ```
 
-バッテリー残量は単一バッテリーの値として扱う。S1は `0x48/08` odometry telemetryのlen=62 payload内に残量percentを格納する。
+バッテリー残量は単一バッテリーの値として扱う。実Wi-Fiログでは、S1は `0x48/08` odometry telemetryのlen=62 payload内に残量percentを格納する。
 
 ```text
 S1 -> PC
@@ -877,15 +889,7 @@ payload:
 | 0 | 2 | uint16_le | subtype = `0001` |
 | 10 | 1 | uint8 | Battery percent |
 
-例:
-
-```text
-payload[0:2] = 0001
-payload[10] = 0x55
-Battery = 85 %
-```
-
-バッテリー残量表示は `0x48/08` len=62 payload offset `10` の1byte値を使用する。既知の残量値 `36 %`、`40 %`、`41 %` に対して、このfieldはそれぞれ `0x24`、`0x28`、`0x29` と一致する。offset `11` は `0x00` のため `uint16_le(payload[10:12])` でも同じ数値になるが、field定義は `uint8` とする。
+既知の残量値 `36 %`、`40 %`、`41 %` に対して、このfieldはそれぞれ `0x24`、`0x28`、`0x29` と一致する。offset `11` は `0x00` のため `uint16_le(payload[10:12])` でも同じ数値になるが、field定義は `uint8` とする。
 
 `0x07/09` はdevice/status値、`0x02/e4` offset `8` の `0x64` はheartbeat/status値、`0x3f/0e` の `50 / 50` はGUN状態値として扱う。
 

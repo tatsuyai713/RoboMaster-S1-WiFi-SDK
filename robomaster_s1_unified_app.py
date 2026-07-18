@@ -580,14 +580,7 @@ class S1Worker(threading.Thread):
             return
         time.sleep(CONTROL_AFTER_APPID_DELAY)
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)
-        sock.bind((self.local_ip, self.local_port))
-        sock.setblocking(False)
-        self._start_tx_thread(sock)
-
+        sock = self._open_control_socket()
         session = increment_session(self.previous_session) if self.previous_session is not None else make_session()
         tick_seed = make_tick_seed()
         self.envelope = Dc68Envelope(session=session, tick_seed=tick_seed)
@@ -610,6 +603,16 @@ class S1Worker(threading.Thread):
             self._stop_tx_thread()
             sock.close()
             self.status("Disconnected")
+
+    def _open_control_socket(self) -> socket.socket:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)
+        sock.bind((self.local_ip, self.local_port))
+        sock.setblocking(False)
+        self._start_tx_thread(sock)
+        return sock
 
     def _connect_appid(self) -> bool:
         appid_bytes = self.appid.encode("ascii")
@@ -1288,7 +1291,8 @@ class S1Worker(threading.Thread):
         if self.stop_event.is_set():
             return
         detail = f"; last inbound session={last_other_session.hex()}" if last_other_session else ""
-        raise RuntimeError(f"control session preconnect timed out for {self.envelope.session.hex()}{detail}")
+        self.log(f"[session] preconnect ACK timeout for {self.envelope.session.hex()}{detail}; continuing")
+        self.events.put(AppEvent("session", message=self.envelope.session.hex()))
 
     def _main_loop(self, sock: socket.socket, target: tuple[str, int]) -> None:
         next_control = time.monotonic()
