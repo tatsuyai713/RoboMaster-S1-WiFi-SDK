@@ -464,7 +464,11 @@ class LabApp(tk.Tk):
             if self.bridge is not None:
                 self.bridge.close()
             self.bridge = self._make_bridge()
-            self._stop_control_sender()
+            self.current_action = None
+            self.current_action_group = None
+            if self.control_job is not None:
+                self.after_cancel(self.control_job)
+                self.control_job = None
             self.bridge.on_telemetry(self.queue_telemetry)
             self.bridge.start()
             if self.robot is not None:
@@ -483,7 +487,11 @@ class LabApp(tk.Tk):
         )
 
     def stop_bridge(self) -> None:
-        self._stop_control_sender()
+        self.current_action = None
+        self.current_action_group = None
+        if self.control_job is not None:
+            self.after_cancel(self.control_job)
+            self.control_job = None
         if self.robot is not None:
             try:
                 self.robot.stop_command_stream()
@@ -497,60 +505,40 @@ class LabApp(tk.Tk):
         self.bridge = None
         self.status_var.set("Bridge stopped")
 
-    def begin_command(self, group: str, command_factory) -> None:  # noqa: ANN001
+    def begin_command(self, group: str, action) -> None:  # noqa: ANN001
         if self.robot is None or self.bridge is None:
             return
-        command = command_factory()
-        self._stop_control_sender()
+        if self.control_job is not None:
+            self.after_cancel(self.control_job)
+            self.control_job = None
         self.current_action_group = group
-        stop_event = threading.Event()
-        self.control_stop_event = stop_event
-        self.control_thread = threading.Thread(
-            target=self._control_send_loop,
-            args=(group, command, stop_event),
-            daemon=True,
-        )
-        self.control_thread.start()
+        self.current_action = action
+        self._send_current_command()
 
-    def _control_send_loop(self, group: str, command: dict[str, float], stop_event: threading.Event) -> None:
-        next_send_time = time.monotonic()
-        while not stop_event.is_set():
-            current_robot = self.robot
-            if current_robot is None or self.bridge is None:
-                return
+    def _send_current_command(self) -> None:
+        self.control_job = None
+        if self.robot is not None and self.bridge is not None and self.current_action is not None:
             try:
-                if group == "chassis":
-                    current_robot.chassis.drive_speed(**command)
-                elif group == "gimbal":
-                    current_robot.gimbal.drive_speed(**command)
-                else:
-                    return
+                self.current_action()
             except Exception as exc:
-                self.after(0, lambda error=str(exc): self.log(f"[tx] {error}"))
-                return
-
-            next_send_time += 0.02
-            wait_time = next_send_time - time.monotonic()
-            if wait_time <= 0:
-                next_send_time = time.monotonic()
-                continue
-            stop_event.wait(wait_time)
-
-    def _stop_control_sender(self, group: str | None = None) -> None:
-        if group is not None and self.current_action_group != group:
-            return
-        if self.control_stop_event is not None:
-            self.control_stop_event.set()
-        self.control_stop_event = None
-        self.control_thread = None
-        self.current_action = None
-        self.current_action_group = None
+                self.log(f"[tx] {exc}")
+            if self.current_action is not None:
+                self.control_job = self.after(20, self._send_current_command)
 
     def _end_current_command(self, _event=None) -> None:  # noqa: ANN001
-        self._stop_control_sender()
+        self.current_action = None
+        self.current_action_group = None
+        if self.control_job is not None:
+            self.after_cancel(self.control_job)
+            self.control_job = None
 
     def send_stop(self) -> None:
-        self._stop_control_sender("chassis")
+        if self.current_action_group == "chassis":
+            self.current_action = None
+            self.current_action_group = None
+            if self.control_job is not None:
+                self.after_cancel(self.control_job)
+                self.control_job = None
         if self.robot is not None and self.bridge is not None:
             try:
                 self.robot.chassis.stop()
@@ -558,7 +546,12 @@ class LabApp(tk.Tk):
                 self.log(f"[chassis-stop] {exc}")
 
     def send_gimbal_stop(self) -> None:
-        self._stop_control_sender("gimbal")
+        if self.current_action_group == "gimbal":
+            self.current_action = None
+            self.current_action_group = None
+            if self.control_job is not None:
+                self.after_cancel(self.control_job)
+                self.control_job = None
         if self.robot is not None and self.bridge is not None:
             try:
                 self.robot.gimbal.stop()
