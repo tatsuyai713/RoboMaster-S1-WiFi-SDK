@@ -11,7 +11,7 @@ MAX_CHASSIS_YAW_SPEED = 120.0
 MAX_GIMBAL_SPEED = 120.0
 
 
-def root_me(module):
+def rm_import(module):
     for provider_name in ("rm_define", "rm_log", "Random"):
         provider = globals().get(provider_name)
         if provider is None:
@@ -37,17 +37,17 @@ adb_process = None
 def init_root_modules():
     global subprocess, select, json, os, sys, time
     if subprocess is None:
-        subprocess = root_me("subprocess")
+        subprocess = rm_import("subprocess")
     if select is None:
-        select = root_me("select")
+        select = rm_import("select")
     if json is None:
-        json = root_me("json")
+        json = rm_import("json")
     if os is None:
-        os = root_me("os")
+        os = rm_import("os")
     if sys is None:
-        sys = root_me("sys")
+        sys = rm_import("sys")
     if time is None:
-        time = root_me("time")
+        time = rm_import("time")
 
 
 def enable_latest_fw_adb():

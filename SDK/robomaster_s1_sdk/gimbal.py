@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 from .action import ImmediateAction
-from .protocol import build_gimbal_velocity_payload
-
 class Gimbal:
     def __init__(self, robot) -> None:  # noqa: ANN001
         self._robot = robot
         self.pitch_sensitivity = 40
         self.yaw_sensitivity = 50
+        self._angle_callback = None
 
-    def drive_speed(self, pitch_speed: float = 0.0, yaw_speed: float = 0.0, **kw) -> bool:
-        if "pitch" in kw:
-            pitch_speed = kw["pitch"]
-        if "yaw" in kw:
-            yaw_speed = kw["yaw"]
-        self._robot.send_duss(0x02, 0x04, 0x00, 0x04, 0x69, build_gimbal_velocity_payload(pitch_speed, yaw_speed))
+    def drive_speed(self, pitch_speed: float = 30.0, yaw_speed: float = 30.0) -> bool:
+        self._robot.set_gimbal_velocity(pitch_speed, yaw_speed)
         return True
 
     def move(
@@ -36,15 +31,13 @@ class Gimbal:
         raise NotImplementedError("Gimbal absolute angle action is not mapped for the S1 Wi-Fi protocol yet")
 
     def recenter(self, pitch_speed: float = 60, yaw_speed: float = 60) -> ImmediateAction:
-        self.stop()
-        return ImmediateAction()
+        raise NotImplementedError("Gimbal recenter is not mapped for the S1 Wi-Fi protocol")
 
     def suspend(self) -> bool:
-        self.stop()
-        return True
+        raise NotImplementedError("Gimbal suspend is not mapped for the S1 Wi-Fi protocol")
 
     def resume(self) -> bool:
-        return True
+        raise NotImplementedError("Gimbal resume is not mapped for the S1 Wi-Fi protocol")
 
     def calibrate(self) -> ImmediateAction:
         """Start gimbal auto calibration.
@@ -89,8 +82,15 @@ class Gimbal:
         def _call(value):
             callback((value.raw0, value.raw1, value.raw2, value.raw3), *args, **kw)
 
+        if self._angle_callback is not None:
+            self._robot.off("gimbal", self._angle_callback)
+        self._angle_callback = _call
         self._robot.on("gimbal", _call)
         return True
 
     def unsub_angle(self) -> bool:
-        return True
+        if self._angle_callback is None:
+            return False
+        callback = self._angle_callback
+        self._angle_callback = None
+        return self._robot.off("gimbal", callback)

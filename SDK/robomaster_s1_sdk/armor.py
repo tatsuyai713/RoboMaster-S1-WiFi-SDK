@@ -21,6 +21,8 @@ ARMOR_NAME_TO_ID = {
 class Armor:
     def __init__(self, robot) -> None:  # noqa: ANN001
         self._robot = robot
+        self._hit_callback = None
+        self._ir_callback = None
 
     @staticmethod
     def id2comp(armor_id: int) -> str:
@@ -39,9 +41,12 @@ class Armor:
 
         def _call(event):
             armor_id = ARMOR_NAME_TO_ID.get(event.armor or "", event.impact_id or 0)
-            hit_type = "ir" if event.source == "ir_hit" else "water"
-            callback((armor_id, hit_type), *args, **kw)
+            hit_type = 1 if event.source == "ir_hit" else 0
+            callback((armor_id, hit_type, 0), *args, **kw)
 
+        if self._hit_callback is not None:
+            self._robot.off("armor_damage", self._hit_callback)
+        self._hit_callback = _call
         self._robot.on("armor_damage", _call)
         return True
 
@@ -53,11 +58,22 @@ class Armor:
             if event.source == "ir_hit":
                 callback(1, *args, **kw)
 
+        if self._ir_callback is not None:
+            self._robot.off("armor_damage", self._ir_callback)
+        self._ir_callback = _call
         self._robot.on("armor_damage", _call)
         return True
 
     def unsub_hit_event(self) -> bool:
-        return True
+        if self._hit_callback is None:
+            return False
+        callback = self._hit_callback
+        self._hit_callback = None
+        return self._robot.off("armor_damage", callback)
 
     def unsub_ir_event(self) -> bool:
-        return True
+        if self._ir_callback is None:
+            return False
+        callback = self._ir_callback
+        self._ir_callback = None
+        return self._robot.off("armor_damage", callback)

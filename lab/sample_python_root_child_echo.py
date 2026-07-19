@@ -1,4 +1,4 @@
-def root_me(module):
+def rm_import(module):
     builtins = rm_define.__dict__["__builtins__"]
     real_import = builtins["__import__"] if isinstance(builtins, dict) else builtins.__import__
     return real_import(module, globals(), locals(), [], 0)
@@ -37,11 +37,11 @@ def mark_stage(stage):
 
 def init_root_modules():
     global subprocess, select, json, os, time
-    subprocess = root_me("subprocess")
-    select = root_me("select")
-    json = root_me("json")
-    os = root_me("os")
-    time = root_me("time")
+    subprocess = rm_import("subprocess")
+    select = rm_import("select")
+    json = rm_import("json")
+    os = rm_import("os")
+    time = rm_import("time")
 
 
 def enable_latest_fw_adb():

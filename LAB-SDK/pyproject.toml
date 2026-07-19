@@ -10,7 +10,13 @@ requires-python = ">=3.10"
 authors = [
   { name = "Tatsuya Ishikawa" }
 ]
+dependencies = [
+  "robomaster-s1-wifi-sdk==0.1.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["robomaster*", "robomaster_lab_sdk*"]
+
+[tool.setuptools.package-data]
+robomaster_lab_sdk = ["templates/*.dsp"]

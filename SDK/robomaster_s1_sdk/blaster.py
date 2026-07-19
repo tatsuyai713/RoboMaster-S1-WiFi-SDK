@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from robomaster_s1_designed_motion import GEL_GUN_CONFIG, IR_GUN_CONFIG
+from .transport import GEL_GUN_CONFIG, IR_GUN_CONFIG
 
 
 class Blaster:

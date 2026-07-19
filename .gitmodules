@@ -1,0 +1,4 @@
+[submodule "robomaster_ros"]
+	path = robomaster_ros
+	url = git@github.com:tatsuyai713/robomaster_ros.git
+	branch = feature/support-ros-2

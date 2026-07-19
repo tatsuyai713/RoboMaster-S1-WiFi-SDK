@@ -9,7 +9,7 @@ import threading
 import time
 from typing import Callable
 
-from robomaster_s1_designed_motion import (
+from .transport import (
     CONTROL_PAYLOADS,
     DEFAULT_PAIR_HASH1,
     DEFAULT_PAIR_HASH2,
@@ -77,9 +77,10 @@ class Robot:
         self._control_name = "stop"
         self._control_payload = NEUTRAL_PAYLOAD
         self._control_deadline: float | None = None
-        self._control_sequence: deque[bytes] = deque()
+        self._control_sequence: deque[bytes] = deque(maxlen=128)
         self.gimbal_pitch_sensitivity = 40
         self.gimbal_yaw_sensitivity = 50
+        self._mode_lock = threading.RLock()
         self._solo = False
         self._connected = False
         self._next_mode_keepalive = 0.0
@@ -121,10 +122,24 @@ class Robot:
         if self.debug:
             print(message)
 
-    def on(self, event: str, callback: Callable[[object], None]) -> None:
+    def on(self, event: str, callback: Callable[[object], None]) -> Callable[[object], None]:
         if event not in self._callbacks:
             self._callbacks[event] = []
         self._callbacks[event].append(callback)
+        return callback
+
+    def off(self, event: str, callback: Callable[[object], None] | None = None) -> bool:
+        callbacks = self._callbacks.get(event)
+        if not callbacks:
+            return False
+        if callback is None:
+            callbacks.clear()
+            return True
+        try:
+            callbacks.remove(callback)
+            return True
+        except ValueError:
+            return False
 
     def _emit(self, event: str, value: object) -> None:
         for callback in self._callbacks.get(event, ()):
@@ -145,6 +160,7 @@ class Robot:
         if self._connected:
             return True
         self._claim_appid(timeout=timeout)
+        time.sleep(protocol.CONTROL_AFTER_APPID_DELAY)
         self._open_control_session()
         self._connected = True
         self._stop.clear()
@@ -156,6 +172,8 @@ class Robot:
 
     def _open_control_session(self, reuse_envelope: bool = False, preconnect_timeout: float = 5.0) -> None:
         self.sock = protocol.open_udp(self.local_ip, self.local_port)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)
         self.sock.setblocking(False)
         self.target = (self.robot_ip, protocol.ROBOT_CONTROL_PORT)
         if not reuse_envelope:
@@ -362,6 +380,17 @@ class Robot:
             self._control_payload = CONTROL_PAYLOADS.get(name, NEUTRAL_PAYLOAD)
             self._control_deadline = None if timeout is None else time.monotonic() + max(0.02, timeout)
 
+    def set_gimbal_velocity(self, pitch_speed: float, yaw_speed: float) -> None:
+        scale = protocol.GIMBAL_SPEED_SCALE
+        payload = protocol.build_gimbal_velocity_payload(
+            float(pitch_speed) / scale,
+            float(yaw_speed) / scale,
+        )
+        with self._lock:
+            self._control_name = "gimbal_velocity"
+            self._control_payload = payload
+            self._control_deadline = None
+
     def queue_control_sequence(self, payloads: tuple[bytes, ...] | list[bytes]) -> None:
         with self._lock:
             self._control_sequence.extend(payloads)
@@ -432,14 +461,15 @@ class Robot:
         self._send_setup_entries(solo_entries=False)
 
     def enter_solo(self) -> None:
-        if self._solo:
-            return
-        self.reset_control_state()
-        self._send_setup_entries(solo_entries=True)
-        self._send_solo_entry_effect()
-        self.reset_control_state()
-        self._solo = True
-        self._next_mode_keepalive = 0.0
+        with self._mode_lock:
+            if self._solo:
+                return
+            self.reset_control_state()
+            self._send_setup_entries(solo_entries=True)
+            self._send_solo_entry_effect()
+            self.reset_control_state()
+            self._solo = True
+            self._next_mode_keepalive = 0.0
 
     def _send_solo_entry_effect(self) -> None:
         sequence = (
@@ -474,31 +504,32 @@ class Robot:
             time.sleep(0.01)
 
     def exit_solo(self) -> None:
-        if not self._solo:
-            return
-        sequence = (
-            ("control", None),
-            ("duss", (0x02, 0x01, 0x40, 0x02, 0x34, "0900006400")),
-            ("duss", (0x02, 0x09, 0x40, 0x3F, 0x59, "00")),
-            ("duss", (0x02, 0xF1, 0x40, 0x0A, 0xA3, "0000")),
-            ("duss", (0x02, 0x09, 0x40, 0x3F, 0xB3, "06040000000000000000")),
-            ("control", None),
-            ("duss", (0x02, 0x09, 0x00, 0x3F, 0x04, "000300")),
-            ("duss", (0x02, 0x09, 0x40, 0x3F, 0x77, "010300")),
-            ("duss", (0x02, 0xF1, 0x40, 0x0A, 0xA3, "0000")),
-        )
-        for kind, command in sequence:
-            if kind == "control":
-                self.send_control_payload(NEUTRAL_PAYLOAD)
-                time.sleep(1.0 / self.control_hz)
-                continue
-            assert command is not None
-            sender, receiver, attr, cmdset, cmdid, payload_hex = command
-            self.send_duss(sender, receiver, attr, cmdset, cmdid, bytes.fromhex(payload_hex))
-            time.sleep(0.01)
-        self.reset_control_state()
-        self._solo = False
-        self._next_mode_keepalive = 0.0
+        with self._mode_lock:
+            if not self._solo:
+                return
+            sequence = (
+                ("control", None),
+                ("duss", (0x02, 0x01, 0x40, 0x02, 0x34, "0900006400")),
+                ("duss", (0x02, 0x09, 0x40, 0x3F, 0x59, "00")),
+                ("duss", (0x02, 0xF1, 0x40, 0x0A, 0xA3, "0000")),
+                ("duss", (0x02, 0x09, 0x40, 0x3F, 0xB3, "06040000000000000000")),
+                ("control", None),
+                ("duss", (0x02, 0x09, 0x00, 0x3F, 0x04, "000300")),
+                ("duss", (0x02, 0x09, 0x40, 0x3F, 0x77, "010300")),
+                ("duss", (0x02, 0xF1, 0x40, 0x0A, 0xA3, "0000")),
+            )
+            for kind, command in sequence:
+                if kind == "control":
+                    self.send_control_payload(NEUTRAL_PAYLOAD)
+                    time.sleep(1.0 / self.control_hz)
+                    continue
+                assert command is not None
+                sender, receiver, attr, cmdset, cmdid, payload_hex = command
+                self.send_duss(sender, receiver, attr, cmdset, cmdid, bytes.fromhex(payload_hex))
+                time.sleep(0.01)
+            self.reset_control_state()
+            self._solo = False
+            self._next_mode_keepalive = 0.0
 
     def fire(self) -> None:
         self.queue_control_sequence((LED_GUN_TRIGGER_NEUTRAL_PAYLOAD,) * 6)
@@ -552,6 +583,10 @@ class Robot:
             self.send_duss(0x02, 0x04, 0x00, 0x04, 0x69, protocol.build_gimbal_velocity_payload(pitch, yaw))
             return
 
+        if control_name == "gimbal_velocity":
+            self.send_duss(0x02, 0x04, 0x00, 0x04, 0x69, payload)
+            return
+
         if control_name == "stop":
             self.send_control_payload(NEUTRAL_PAYLOAD)
             self.send_duss(0x02, 0x04, 0x00, 0x04, 0x69, protocol.build_gimbal_velocity_payload(0.0, 0.0))
@@ -579,15 +614,17 @@ class Robot:
                     self._handle_rx(data)
             now = time.monotonic()
             if self._connected and now >= next_control:
-                if self._solo:
-                    self._send_control_frame()
-                else:
-                    self.send_control_payload(NEUTRAL_PAYLOAD)
+                with self._mode_lock:
+                    if self._solo:
+                        self._send_control_frame()
+                    else:
+                        self.send_control_payload(NEUTRAL_PAYLOAD)
                 next_control += interval
                 if next_control < now - interval:
                     next_control = now + interval
             if self._connected and now >= self._next_mode_keepalive:
-                self._send_mode_keepalive()
+                with self._mode_lock:
+                    self._send_mode_keepalive()
                 self._next_mode_keepalive = now + 1.0
             time.sleep(0.001)
 

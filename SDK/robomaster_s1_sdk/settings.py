@@ -3,7 +3,7 @@ from __future__ import annotations
 import struct
 import time
 
-from robomaster_s1_designed_motion import DUSS_ACTIONS
+from .transport import DUSS_ACTIONS
 
 
 VOICE_LANGUAGE_IDS = {

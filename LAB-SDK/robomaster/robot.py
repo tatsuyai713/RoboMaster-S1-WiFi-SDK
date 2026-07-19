@@ -1,129 +1,108 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-import time
-
-from robomaster_lab_sdk.robot import Robot
-from robomaster_lab_sdk.bridge import DEFAULT_CONTROL_PORT, DEFAULT_TELEMETRY_PORT, LabBridge, LabTelemetry
-from robomaster_lab_sdk.program import (
-    lab_metadata_markers_for_dsp,
-    parse_lab_dsp_metadata,
-    replace_lab_dsp_python_code,
-    upload_lab_dsp,
-)
-from robomaster_s1_sdk import DiscoveredRobot, discover_robots
+from robomaster_lab_sdk.action import ImmediateAction
+from robomaster_lab_sdk.action import ActionDispatcher
+from robomaster_lab_sdk.robot import Robot as _LabRobot
+from robomaster_lab_sdk.unsupported import unsupported
+from . import config as sdk_config
+from .camera import EPCamera
+from .dds import Subscriber
 
 FREE = "free"
-GIMBAL_LEAD = "gimbal_follow"
-CHASSIS_LEAD = "chassis_follow"
-DEFAULT_DSP_NAME = "sample_labo_2_edited.dsp"
-DEFAULT_BRIDGE_REFERENCE_NAME = "extracted_lab_twister_py.dsp"
-BRIDGE_CAPABLE_DSP_NAMES = {
-    "robomaster_s1_lab_control_bridge.dsp",
-    "sample_python_child_udp_probe.dsp",
-}
+GIMBAL_LEAD = "gimbal_lead"
+CHASSIS_LEAD = "chassis_lead"
+
+SOUND_ID_ATTACK = 0x101
+SOUND_ID_SHOOT = 0x102
+SOUND_ID_SCANNING = 0x103
+SOUND_ID_RECOGNIZED = 0x104
+SOUND_ID_GIMBAL_MOVE = 0x105
+SOUND_ID_COUNT_DOWN = 0x106
+SOUND_ID_1C = 0x107
+SOUND_ID_1C_SHARP = 0x108
+SOUND_ID_1D = 0x109
+SOUND_ID_1D_SHARP = 0x10A
+SOUND_ID_1E = 0x10B
+SOUND_ID_1F = 0x10C
+SOUND_ID_1F_SHARP = 0x10D
+SOUND_ID_1G = 0x10E
+SOUND_ID_1A = 0x110
+SOUND_ID_1A_SHARP = 0x111
+SOUND_ID_1B = 0x112
+SOUND_ID_2C = 0x113
+SOUND_ID_2C_SHARP = 0x114
+SOUND_ID_2D = 0x115
+SOUND_ID_2D_SHARP = 0x116
+SOUND_ID_2E = 0x117
+SOUND_ID_2F = 0x118
+SOUND_ID_2F_SHARP = 0x119
+SOUND_ID_2G = 0x11A
+SOUND_ID_2G_SHARP = 0x11B
+SOUND_ID_2A = 0x11C
+SOUND_ID_2A_SHARP = 0x11D
+SOUND_ID_2B = 0x11E
+SOUND_ID_3C = 0x11F
+SOUND_ID_3C_SHARP = 0x120
+SOUND_ID_3D = 0x121
+SOUND_ID_3D_SHARP = 0x122
+SOUND_ID_3E = 0x123
+SOUND_ID_3F = 0x124
+SOUND_ID_3F_SHARP = 0x125
+SOUND_ID_3G = 0x126
+SOUND_ID_3G_SHARP = 0x127
+SOUND_ID_3A = 0x128
+SOUND_ID_3A_SHARP = 0x129
+SOUND_ID_3B = 0x12A
 
 
-@dataclass(frozen=True)
-class LabUploadResult:
-    selected_program: str
-    title: str
-    guid: str
-    sign: str
-    guid_marker: int
-    full_marker: int
-    byte_count: int
-    digest: str
-    upload_time: str
+class RobotPlaySoundAction(ImmediateAction):
+    def __init__(self, sound_id, times, **kw) -> None:  # noqa: ANN001, ANN003
+        super().__init__(**kw)
+        self.sound_id = sound_id
+        self.times = times
 
 
-def is_bridge_capable(program_name: str) -> bool:
-    return program_name.strip().lower() in BRIDGE_CAPABLE_DSP_NAMES
+class Robot(_LabRobot):
+    def __init__(self, cli=None, **kwargs) -> None:  # noqa: ANN001, ANN003
+        super().__init__(**kwargs)
+        self.client = cli
+        self.action_dispatcher = ActionDispatcher(cli)
+        self.dds = Subscriber(self)
+        self.conf = sdk_config.ep_conf
+        previous_camera = self.camera
+        self.off("video", previous_camera._on_video)
+        self.camera = EPCamera(self)
+
+    def initialize(self, conn_type="ap", proto_type="udp", sn=None):
+        return super().initialize(conn_type=conn_type, proto_type=proto_type, sn=sn)
+
+    def play_sound(self, sound_id, times=1):
+        accepted = True
+        for _ in range(max(1, int(times))):
+            accepted = self.media.play_sound(sound_id) and accepted
+        return RobotPlaySoundAction(
+            sound_id=sound_id,
+            times=times,
+            accepted=accepted,
+        )
 
 
-def extract_python_code(dsp: bytes | str) -> str:
-    text = dsp.decode("utf-8") if isinstance(dsp, bytes) else dsp
-    start = text.find("<python_code><![CDATA[")
-    if start < 0:
-        raise ValueError("DSP python_code section was not found")
-    start += len("<python_code><![CDATA[")
-    end = text.find("]]></python_code>", start)
-    if end < 0:
-        raise ValueError("DSP python_code section was not closed")
-    return text[start:end]
-
-
-def load_lab_program(lab_dir: Path, program_name: str) -> tuple[str | bytes, str, str, str, int, int, int]:
-    selected_program = program_name.strip()
-    if not selected_program:
-        raise RuntimeError("Select a DSP file from the lab folder")
-    dsp_path = (lab_dir / selected_program).resolve()
-    lab_dir_resolved = lab_dir.resolve()
-    if lab_dir_resolved not in (dsp_path, *dsp_path.parents):
-        raise ValueError("Selected DSP path is outside the lab folder")
-    if not dsp_path.exists():
-        raise FileNotFoundError(f"Selected DSP was not found: {dsp_path}")
-    dsp: str | bytes = dsp_path.read_bytes()
-    if is_bridge_capable(selected_program):
-        reference_path = lab_dir / DEFAULT_BRIDGE_REFERENCE_NAME
-        if not reference_path.exists():
-            raise FileNotFoundError(f"lab/{DEFAULT_BRIDGE_REFERENCE_NAME} is required as the known-good Python Lab container")
-        paired_python_path = dsp_path.with_suffix(".py")
-        if selected_program.strip().lower() == "robomaster_s1_lab_control_bridge.dsp" and paired_python_path.exists():
-            bridge_python = paired_python_path.read_text(encoding="utf-8")
-        else:
-            bridge_python = dsp.decode("utf-8") if dsp_path.suffix.lower() == ".py" else extract_python_code(dsp)
-        dsp = replace_lab_dsp_python_code(reference_path.read_bytes(), bridge_python)
-    guid, sign, title = parse_lab_dsp_metadata(dsp)
-    full_marker, guid_marker = lab_metadata_markers_for_dsp(dsp)
-    byte_count = len(dsp.encode("utf-8") if isinstance(dsp, str) else dsp)
-    return dsp, guid, sign, title, full_marker, guid_marker, byte_count
-
-
-def upload_program(ep_robot: Robot, lab_dir: Path, program_name: str) -> LabUploadResult:
-    dsp, guid, sign, title, full_marker, guid_marker, byte_count = load_lab_program(lab_dir, program_name)
-    if full_marker == 0x21:
-        ep_robot.send_duss(0x02, 0x09, 0x40, 0x3F, 0x4C, b"\x00")
-        time.sleep(0.02)
-    ep_robot.send_lab_metadata(guid, sign, full_marker)
-    time.sleep(0.02)
-    ep_robot.send_lab_guid_metadata(guid, guid_marker)
-    time.sleep(0.02)
-    if full_marker == 0x21:
-        ep_robot.send_lab_upload_size(byte_count)
-        time.sleep(0.02)
-    digest = upload_lab_dsp(ep_robot.robot_ip, dsp)
-    return LabUploadResult(
-        selected_program=program_name,
-        title=title,
-        guid=guid,
-        sign=sign,
-        guid_marker=guid_marker,
-        full_marker=full_marker,
-        byte_count=byte_count,
-        digest=digest,
-        upload_time=time.strftime("%H:%M:%S"),
-    )
+class Drone:
+    def __init__(self, cli=None) -> None:  # noqa: ANN001
+        unsupported("Tello Drone")
 
 
 __all__ = [
-    "BRIDGE_CAPABLE_DSP_NAMES",
-    "CHASSIS_LEAD",
-    "DEFAULT_BRIDGE_REFERENCE_NAME",
-    "DEFAULT_CONTROL_PORT",
-    "DEFAULT_DSP_NAME",
-    "DEFAULT_TELEMETRY_PORT",
-    "DiscoveredRobot",
+    "Robot",
+    "RobotPlaySoundAction",
+    "Drone",
     "FREE",
     "GIMBAL_LEAD",
-    "LabBridge",
-    "LabTelemetry",
-    "LabUploadResult",
-    "Robot",
-    "discover_robots",
-    "extract_python_code",
-    "is_bridge_capable",
-    "load_lab_program",
-    "upload_program",
+    "CHASSIS_LEAD",
+    "SOUND_ID_ATTACK",
+    "SOUND_ID_SHOOT",
+    "SOUND_ID_SCANNING",
+    "SOUND_ID_RECOGNIZED",
+    "SOUND_ID_GIMBAL_MOVE",
+    "SOUND_ID_COUNT_DOWN",
 ]

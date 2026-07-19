@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import socket
 import struct
 
-from robomaster_s1_designed_motion import (
+from .transport import (
     Dc68Envelope,
     build_control,
     build_duss,
@@ -24,6 +24,8 @@ ROBOT_CONTROL_PORT = 10607
 DEFAULT_LOCAL_CONTROL_PORT = 10609
 DEFAULT_INIT_SEQ = 10072
 DEFAULT_CONTROL_HZ = 50.0
+CONTROL_AFTER_APPID_DELAY = 0.20
+GIMBAL_SPEED_SCALE = 120.0
 
 
 def clamp_int(value: int, low: int, high: int) -> int:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 import sys
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,46 @@ if _selected_package_path.exists():
         sys.path.insert(0, str(_selected_sdk_root))
     __path__.append(str(_selected_package_path))
 
-from . import battery, blaster, camera, chassis, gimbal, led, robot  # noqa: E402
+from . import (  # noqa: E402
+    action,
+    armor,
+    battery,
+    blaster,
+    camera,
+    chassis,
+    client,
+    config,
+    conn,
+    gimbal,
+    led,
+    media,
+    protocol,
+    robot,
+    util,
+)
 
-__all__ = ["battery", "blaster", "camera", "chassis", "gimbal", "led", "robot"]
+logger = logging.getLogger("sdk")
+_selected_root_name = _selected_package_path.parent.name
+IS_LAB_SDK = _selected_root_name == "LAB-SDK"
+IS_S1_WIFI_SDK = _selected_root_name == "SDK"
+
+__all__ = [
+    "action",
+    "armor",
+    "battery",
+    "blaster",
+    "camera",
+    "chassis",
+    "client",
+    "config",
+    "conn",
+    "gimbal",
+    "led",
+    "media",
+    "protocol",
+    "robot",
+    "util",
+    "logger",
+    "IS_LAB_SDK",
+    "IS_S1_WIFI_SDK",
+]

@@ -1,4 +1,4 @@
-<dji><attribute><creation_date>2019/03/27</creation_date><sign>aac5e619cd893cde</sign><modify_time>7/18/2026 3:28:31 PM</modify_time><guid>00e1375a496c4f938ae2736ec06dfb96</guid><creator>Anonymous</creator><firmware_version_dependency>00.00.0000</firmware_version_dependency><title>Twister-Py</title><code_type>python</code_type><app_min_version></app_min_version><app_max_version></app_max_version></attribute><audio-list /><code><python_code><![CDATA[def root_me(module):
+<dji><attribute><creation_date>2019/03/27</creation_date><sign>aac5e619cd893cde</sign><modify_time>7/18/2026 3:28:31 PM</modify_time><guid>00e1375a496c4f938ae2736ec06dfb96</guid><creator>Anonymous</creator><firmware_version_dependency>00.00.0000</firmware_version_dependency><title>Twister-Py</title><code_type>python</code_type><app_min_version></app_min_version><app_max_version></app_max_version></attribute><audio-list /><code><python_code><![CDATA[def rm_import(module):
     builtins = rm_define.__dict__["__builtins__"]
     real_import = builtins["__import__"] if isinstance(builtins, dict) else builtins.__import__
     return real_import(module, globals(), locals(), [], 0)
@@ -128,9 +128,9 @@ def start():
     gimbal_ctrl.set_rotate_speed(90)
 
     try:
-        sub_process = root_me("sub" + "process")
-        time_module = root_me("time")
-        socket_module = root_me("socket")
+        sub_process = rm_import("sub" + "process")
+        time_module = rm_import("time")
+        socket_module = rm_import("socket")
     except Exception as exc:
         print("import failed:", str(exc))
         mark_failure()

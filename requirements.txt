@@ -1,0 +1,11 @@
+# Host-side dependencies for the unified, SDK, and LAB applications.
+# tkinter is supplied by the Python/OS installation and is not a pip package.
+qrcode[pil]>=7.4
+Pillow>=10
+av>=11
+sounddevice>=0.4
+
+# Additional Python dependencies used by the bundled robomaster_ros driver.
+numpy>=1.24
+numpy-quaternion>=2023.0
+PyYAML>=6

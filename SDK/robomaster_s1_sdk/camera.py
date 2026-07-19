@@ -9,6 +9,7 @@ class Camera:
 
     def __init__(self, robot) -> None:  # noqa: ANN001
         self._robot = robot
+        self._liveview = None
         self._video_frames: queue.Queue[bytes] = queue.Queue(maxsize=120)
         self._audio_frames: queue.Queue[bytes] = queue.Queue(maxsize=120)
         self._robot.on("video", self._push_video)
@@ -50,9 +51,13 @@ class Camera:
 
     def start_video_stream(self, display: bool = True, resolution: str = "720p") -> bool:
         self.set_resolution(resolution)
+        if self._liveview is not None:
+            return self._liveview.start_video_stream(display=display)
         return True
 
     def stop_video_stream(self) -> bool:
+        if self._liveview is not None:
+            return self._liveview.stop_video_stream()
         return True
 
     def read_video_frame(self, timeout: float = 3, strategy: str = "pipeline") -> bytes | None:
@@ -63,9 +68,13 @@ class Camera:
 
     def start_audio_stream(self) -> bool:
         self._robot.audio.request_rx()
+        if self._liveview is not None:
+            return self._liveview.start_audio_stream()
         return True
 
     def stop_audio_stream(self) -> bool:
+        if self._liveview is not None:
+            return self._liveview.stop_audio_stream()
         return True
 
     def read_audio_frame(self, timeout: float = 1) -> bytes | None:
@@ -118,3 +127,8 @@ class Camera:
         if key not in values:
             raise ValueError("quality must be low, medium, or high")
         self._robot.settings.send_named_action(values[key])
+
+    def _set_zoom(self, value: float) -> bool:
+        # Keep the official private hook import-compatible for robomaster_ros.
+        # No captured S1 zoom command is available, so do not claim success.
+        return False

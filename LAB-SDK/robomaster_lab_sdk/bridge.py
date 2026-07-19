@@ -12,6 +12,10 @@ from typing import Callable
 from .config import DEFAULT_CONTROL_PORT, DEFAULT_TELEMETRY_PORT
 
 
+MAX_PRIORITY_COMMANDS = 8
+MAX_ORDERED_COMMANDS = 32
+
+
 @dataclass
 class LabTelemetry:
     sequence: int
@@ -19,16 +23,17 @@ class LabTelemetry:
     values: dict[str, object]
 
 
-def _put_latest(q, item) -> None:  # noqa: ANN001
-    while True:
+def _put_latest(q, item) -> bool:  # noqa: ANN001
+    for _attempt in range(3):
         try:
             q.put_nowait(item)
-            return
+            return True
         except queue.Full:
             try:
-                q.get_nowait()
+                q.get(timeout=0.001)
             except queue.Empty:
-                return
+                continue
+    return False
 
 
 def _is_event_command(command: dict[str, object]) -> bool:
@@ -36,69 +41,155 @@ def _is_event_command(command: dict[str, object]) -> bool:
     return any(bool(command.get(key)) for key in event_keys)
 
 
-def _tx_process_main(robot_ip: str, control_port: int, event_queue, state_queue, status_queue, stop_event, debug: bool) -> None:  # noqa: ANN001
+def _payload_item(item):  # noqa: ANN001
+    if item is None:
+        return -1, None, -1
+    if isinstance(item, tuple) and len(item) == 3:
+        return int(item[0]), item[1], int(item[2])
+    if isinstance(item, tuple) and len(item) == 2:
+        return int(item[0]), item[1], -1
+    payload = item
+    if not isinstance(payload, bytes):
+        return -1, None, -1
+    try:
+        return (
+            int(json.loads(payload.decode("utf-8")).get("command_seq", -1)),
+            payload,
+            -1,
+        )
+    except Exception:
+        return -1, payload, -1
+
+
+def _payload_sequence(item) -> int:  # noqa: ANN001
+    sequence, _payload, _generation = _payload_item(item)
+    return sequence
+
+
+def _tx_process_main(
+    robot_ip: str,
+    control_port: int,
+    priority_queue,
+    event_queue,
+    state_queue,
+    status_queue,
+    stop_event,
+    debug: bool,
+    wake_event=None,
+    generation_value=None,
+) -> None:  # noqa: ANN001
+    """Send priority, bounded event, then latest state payloads.
+
+    Queue entries contain ``(command_seq, payload, generation)`` so this
+    process never decodes JSON merely to compare ordering.
+    """
     sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)
         _put_latest(status_queue, ("tx-start", None))
+        observed_generation = 0
         while not stop_event.is_set():
-            event_payloads = []
-            latest_state_payload = None
+            priority_items = []
+            event_items = []
+            latest_state_item = None
 
             while True:
                 try:
-                    event_payload = event_queue.get_nowait()
+                    priority_item = priority_queue.get_nowait()
                 except queue.Empty:
                     break
-                if event_payload is None:
+                if priority_item is None:
                     stop_event.set()
                     break
-                event_payloads.append(event_payload)
+                priority_items.append(priority_item)
+                observed_generation = max(
+                    observed_generation,
+                    _payload_item(priority_item)[2],
+                )
+
+            if priority_items:
+                # Cancel only commands older than the stop. Commands queued
+                # after it (for example stop -> drive_wheels) remain ordered.
+                priority_sequence = max(
+                    _payload_sequence(item) for item in priority_items
+                )
+                while True:
+                    try:
+                        event_item = event_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if event_item is None:
+                        stop_event.set()
+                        break
+                    observed_generation = max(
+                        observed_generation,
+                        _payload_item(event_item)[2],
+                    )
+                    if _payload_sequence(event_item) > priority_sequence:
+                        event_items.append(event_item)
+            else:
+                for _ in range(8):
+                    try:
+                        event_item = event_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if event_item is None:
+                        stop_event.set()
+                        break
+                    observed_generation = max(
+                        observed_generation,
+                        _payload_item(event_item)[2],
+                    )
+                    event_items.append(event_item)
 
             while True:
                 try:
-                    latest_state_payload = state_queue.get_nowait()
+                    latest_state_item = state_queue.get_nowait()
                 except queue.Empty:
                     break
+                observed_generation = max(
+                    observed_generation,
+                    _payload_item(latest_state_item)[2],
+                )
+            if (
+                priority_items
+                and _payload_sequence(latest_state_item)
+                <= priority_sequence
+            ):
+                latest_state_item = None
 
-            payloads_to_send = event_payloads
-            if latest_state_payload is not None:
-                payloads_to_send.append(latest_state_payload)
+            items_to_send = []
+            items_to_send.extend(priority_items)
+            items_to_send.extend(event_items)
+            if latest_state_item is not None:
+                items_to_send.append(latest_state_item)
 
-            if not payloads_to_send:
-                try:
-                    event_payload = event_queue.get(timeout=0.05)
-                except queue.Empty:
-                    continue
-                if event_payload is None:
-                    break
-                payloads_to_send.append(event_payload)
-
-                while True:
-                    try:
-                        event_payload = event_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    if event_payload is None:
-                        stop_event.set()
-                        break
-                    payloads_to_send.append(event_payload)
-
-                while True:
-                    try:
-                        latest_state_payload = state_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                if latest_state_payload is not None:
-                    payloads_to_send.append(latest_state_payload)
-
-            if not payloads_to_send:
+            if not items_to_send:
+                if wake_event is None:
+                    stop_event.wait(0.05)
+                else:
+                    pending_generation = (
+                        generation_value.value
+                        if generation_value is not None
+                        else observed_generation
+                    )
+                    if pending_generation > observed_generation:
+                        # Queue.put() uses a feeder thread. A generation newer
+                        # than the latest dequeued item means it is still
+                        # crossing that feeder pipe; do not lose its wakeup.
+                        stop_event.wait(0.001)
+                    else:
+                        wake_event.wait(1.0)
+                        wake_event.clear()
                 continue
 
             try:
-                for payload in payloads_to_send:
+                for item in items_to_send:
+                    _sequence, payload, _generation = _payload_item(item)
+                    if payload is None:
+                        continue
                     sock.sendto(payload, (robot_ip, control_port))
                     if debug:
                         print(f"[lab-tx] {payload.decode('utf-8', 'replace')}")
@@ -162,8 +253,11 @@ class LabBridge:
         self.require_session_id = require_session_id
         self._mp_context = mp.get_context("spawn")
         self._stop = self._mp_context.Event()
+        self._tx_wake = self._mp_context.Event()
+        self._tx_generation = self._mp_context.Value("Q", 0)
         self._thread: threading.Thread | None = None
         self._tx_lock = threading.RLock()
+        self._tx_priority_queue = None
         self._tx_event_queue = None
         self._tx_state_queue = None
         self._rx_queue = None
@@ -171,6 +265,7 @@ class LabBridge:
         self._tx_process: mp.Process | None = None
         self._rx_process: mp.Process | None = None
         self._callbacks: list[Callable[[LabTelemetry], None]] = []
+        self._telemetry_ready = threading.Event()
         self.last_telemetry: LabTelemetry | None = None
         self._fire_id = 0
         self._command_seq = 0
@@ -180,13 +275,32 @@ class LabBridge:
         if self._thread is not None:
             return
         self._stop.clear()
-        self._tx_event_queue = self._mp_context.Queue(maxsize=128)
+        self._telemetry_ready.clear()
+        self._tx_wake.clear()
+        self._tx_generation.value = 0
+        self._tx_priority_queue = self._mp_context.Queue(
+            maxsize=MAX_PRIORITY_COMMANDS
+        )
+        self._tx_event_queue = self._mp_context.Queue(
+            maxsize=MAX_ORDERED_COMMANDS
+        )
         self._tx_state_queue = self._mp_context.Queue(maxsize=1)
-        self._rx_queue = self._mp_context.Queue(maxsize=64)
+        self._rx_queue = self._mp_context.Queue(maxsize=1)
         self._status_queue = self._mp_context.Queue(maxsize=16)
         self._tx_process = self._mp_context.Process(
             target=_tx_process_main,
-            args=(self.robot_ip, self.control_port, self._tx_event_queue, self._tx_state_queue, self._status_queue, self._stop, self.debug),
+            args=(
+                self.robot_ip,
+                self.control_port,
+                self._tx_priority_queue,
+                self._tx_event_queue,
+                self._tx_state_queue,
+                self._status_queue,
+                self._stop,
+                self.debug,
+                self._tx_wake,
+                self._tx_generation,
+            ),
         )
         self._rx_process = self._mp_context.Process(
             target=_rx_process_main,
@@ -204,9 +318,10 @@ class LabBridge:
 
     def close(self) -> None:
         self._stop.set()
-        if self._tx_event_queue is not None:
+        self._tx_wake.set()
+        if self._tx_priority_queue is not None:
             try:
-                self._tx_event_queue.put_nowait(None)
+                _put_latest(self._tx_priority_queue, None)
             except Exception:
                 pass
         if self._thread is not None:
@@ -221,13 +336,19 @@ class LabBridge:
                 process.join(timeout=1.0)
         self._tx_process = None
         self._rx_process = None
+        self._tx_priority_queue = None
         self._tx_event_queue = None
         self._tx_state_queue = None
         self._rx_queue = None
         self._status_queue = None
+        self._telemetry_ready.clear()
 
     def on_telemetry(self, callback: Callable[[LabTelemetry], None]) -> None:
-        self._callbacks.append(callback)
+        if callback not in self._callbacks:
+            self._callbacks.append(callback)
+
+    def wait_for_telemetry(self, timeout: float | None = None) -> bool:
+        return self._telemetry_ready.wait(timeout)
 
     def send(self, **command: object) -> bool:
         command.pop("_drop_if_busy", None)
@@ -236,20 +357,54 @@ class LabBridge:
             self._command_seq = (self._command_seq + 1) & 0x7FFFFFFF
             command.setdefault("command_seq", self._command_seq)
             command.setdefault("session_id", self.session_id)
-        is_event = force_event or _is_event_command(command)
-        payload = json.dumps(command, separators=(",", ":")).encode("utf-8")
-        if self._tx_event_queue is None or self._tx_state_queue is None:
-            return False
-        if self._tx_process is not None and not self._tx_process.is_alive():
-            self._drain_status()
-            return False
-        if is_event:
-            try:
-                self._tx_event_queue.put(payload, timeout=0.05)
-            except queue.Full:
+            command_sequence = int(command["command_seq"])
+            is_event = force_event or _is_event_command(command)
+            payload = json.dumps(command, separators=(",", ":")).encode("utf-8")
+            if (
+                self._tx_priority_queue is None
+                or self._tx_event_queue is None
+                or self._tx_state_queue is None
+            ):
                 return False
-        else:
-            _put_latest(self._tx_state_queue, payload)
+            if self._tx_process is not None and not self._tx_process.is_alive():
+                self._drain_status()
+                return False
+            module = str(command.get("module", "")).lower()
+            method = str(command.get("method", "")).lower()
+            params = command.get("params", {})
+            wheel_stop = False
+            if (
+                module == "chassis"
+                and method == "set_wheel_speed"
+                and isinstance(params, dict)
+            ):
+                try:
+                    wheel_stop = all(
+                        int(params.get(name, 0)) == 0
+                        for name in ("w1", "w2", "w3", "w4")
+                    )
+                except (TypeError, ValueError):
+                    wheel_stop = False
+            is_priority = bool(command.get("stop")) or (
+                method == "stop" and module in {"chassis", "gimbal"}
+            ) or wheel_stop
+            generation = int(self._tx_generation.value) + 1
+            item = (command_sequence, payload, generation)
+            if is_priority:
+                try:
+                    self._tx_priority_queue.put_nowait(item)
+                except queue.Full:
+                    return False
+            elif is_event:
+                try:
+                    self._tx_event_queue.put_nowait(item)
+                except queue.Full:
+                    return False
+            else:
+                if not _put_latest(self._tx_state_queue, item):
+                    return False
+            self._tx_generation.value = generation
+        self._tx_wake.set()
         return True
 
     def prime(self, count: int = 5, interval: float = 0.02) -> None:
@@ -266,35 +421,39 @@ class LabBridge:
             self.send(**neutral)
             time.sleep(max(0.0, float(interval)))
 
-    def call(self, module: str, method: str, **params: object) -> None:
-        self.send(module=module, method=method, params=params)
+    def call(self, module: str, method: str, **params: object) -> bool:
+        return self.send(module=module, method=method, params=params)
 
-    def drive_speed(self, x: float = 0.0, y: float = 0.0, z: float = 0.0) -> None:
-        self.send(x=float(x), y=float(y), z=float(z))
+    def drive_speed(self, x: float = 0.0, y: float = 0.0, z: float = 0.0) -> bool:
+        return self.send(x=float(x), y=float(y), z=float(z))
 
-    def gimbal_drive_speed(self, pitch_speed: float = 0.0, yaw_speed: float = 0.0) -> None:
-        self.send(gimbal_pitch=float(pitch_speed), gimbal_yaw=float(yaw_speed))
+    def gimbal_drive_speed(self, pitch_speed: float = 0.0, yaw_speed: float = 0.0) -> bool:
+        return self.send(gimbal_pitch=float(pitch_speed), gimbal_yaw=float(yaw_speed))
 
-    def stop_robot(self) -> None:
-        self.send(stop=True)
+    def stop_robot(self) -> bool:
+        return self.send(stop=True)
 
-    def stop_chassis(self) -> None:
-        self.send(_event=True, x=0.0, y=0.0, z=0.0)
+    def stop_chassis(self) -> bool:
+        return self.call("chassis", "stop")
 
-    def stop_gimbal(self) -> None:
-        self.send(_event=True, gimbal_pitch=0.0, gimbal_yaw=0.0)
+    def stop_gimbal(self) -> bool:
+        return self.call("gimbal", "stop")
 
-    def set_robot_mode(self, mode: str = "free") -> None:
-        self.send(mode=mode)
+    def set_robot_mode(self, mode: str = "free") -> bool:
+        return self.send(mode=mode)
 
-    def fire(self, gun_type: str = "physical") -> None:
+    def fire(self, gun_type: str = "physical") -> bool:
         with self._tx_lock:
             self._fire_id = (self._fire_id + 1) & 0xFFFF
             fire_id = self._fire_id
-        self.send(fire=True, gun_type=gun_type, fire_id=fire_id)
+            return self.send(
+                fire=True,
+                gun_type=gun_type,
+                fire_id=fire_id,
+            )
 
-    def set_led(self, comp: str = "all", r: int = 255, g: int = 255, b: int = 255, effect: str = "on", freq: int = 1) -> None:
-        self.send(led=True, comp=comp, r=int(r), g=int(g), b=int(b), effect=effect, freq=int(freq))
+    def set_led(self, comp: str = "all", r: int = 255, g: int = 255, b: int = 255, effect: str = "on", freq: int = 1) -> bool:
+        return self.send(led=True, comp=comp, r=int(r), g=int(g), b=int(b), effect=effect, freq=int(freq))
 
     def _rx_queue_loop(self) -> None:
         assert self._rx_queue is not None
@@ -323,6 +482,7 @@ class LabBridge:
                 values=values,
             )
             self.last_telemetry = telemetry
+            self._telemetry_ready.set()
             for callback in tuple(self._callbacks):
                 try:
                     callback(telemetry)

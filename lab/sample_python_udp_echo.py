@@ -1,7 +1,7 @@
 import time
 
 
-def root_me(module):
+def rm_import(module):
     builtins = rm_log.__dict__.get("__builtins__")
     if isinstance(builtins, dict):
         real_import = builtins["__import__"]
@@ -11,9 +11,9 @@ def root_me(module):
 
 
 def _start_udp_echo():
-    socket = root_me("socket")
-    select = root_me("select")
-    json = root_me("json")
+    socket = rm_import("socket")
+    select = rm_import("select")
+    json = rm_import("json")
 
     command_port = 40923
     telemetry_port = 40924

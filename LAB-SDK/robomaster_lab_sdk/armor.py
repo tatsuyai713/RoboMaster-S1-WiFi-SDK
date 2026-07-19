@@ -27,6 +27,8 @@ ARMOR_NAME_TO_ID = {
 class Armor:
     def __init__(self, robot) -> None:  # noqa: ANN001
         self._robot = robot
+        self._hit_callback = None
+        self._ir_callback = None
 
     @staticmethod
     def id2comp(armor_id: int) -> str:
@@ -37,10 +39,11 @@ class Armor:
         return ARMOR_COMP_TO_ID[comp]
 
     def set_hit_sensitivity(self, comp: str = "all", sensitivity: int = 5) -> bool:
-        self._robot.bridge.call("armor", "set_hit_sensitivity", comp=comp, sensitivity=int(sensitivity))
-        return True
+        return self._robot.bridge.call(
+            "armor", "set_hit_sensitivity", comp=comp, sensitivity=int(sensitivity)
+        )
 
-    def sub_hit_event(self, callback=None, *args, **kwargs) -> bool:  # noqa: ANN001
+    def sub_hit_event(self, callback=None, *args, **kw) -> bool:  # noqa: ANN001
         if callback is None:
             return False
 
@@ -54,12 +57,15 @@ class Armor:
                 impact_id = event.get("impact_id", impact_id)
             armor_id = ARMOR_NAME_TO_ID.get(str(armor or ""), int(impact_id or 0))
             hit_type = "ir" if str(source) == "ir_hit" else "water"
-            callback((armor_id, hit_type), *args, **kwargs)
+            callback((armor_id, hit_type), *args, **kw)
 
+        if self._hit_callback is not None:
+            self._robot.off("armor_damage", self._hit_callback)
+        self._hit_callback = _call
         self._robot.on("armor_damage", _call)
         return True
 
-    def sub_ir_event(self, callback=None, *args, **kwargs) -> bool:  # noqa: ANN001
+    def sub_ir_event(self, callback=None, *args, **kw) -> bool:  # noqa: ANN001
         if callback is None:
             return False
 
@@ -68,13 +74,24 @@ class Armor:
             if isinstance(event, dict):
                 source = event.get("source", source)
             if str(source) == "ir_hit":
-                callback(1, *args, **kwargs)
+                callback(1, *args, **kw)
 
+        if self._ir_callback is not None:
+            self._robot.off("armor_damage", self._ir_callback)
+        self._ir_callback = _call
         self._robot.on("armor_damage", _call)
         return True
 
     def unsub_hit_event(self) -> bool:
-        return True
+        if self._hit_callback is None:
+            return False
+        callback = self._hit_callback
+        self._hit_callback = None
+        return self._robot.off("armor_damage", callback)
 
     def unsub_ir_event(self) -> bool:
-        return True
+        if self._ir_callback is None:
+            return False
+        callback = self._ir_callback
+        self._ir_callback = None
+        return self._robot.off("armor_damage", callback)

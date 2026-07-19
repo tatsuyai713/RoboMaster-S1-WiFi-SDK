@@ -1,4 +1,4 @@
-def root_me(module):
+def rm_import(module):
     builtins = rm_define.__dict__["__builtins__"]
     real_import = builtins["__import__"] if isinstance(builtins, dict) else builtins.__import__
     return real_import(module, globals(), locals(), [], 0)
@@ -24,8 +24,8 @@ def start():
     gimbal_ctrl.set_rotate_speed(90)
 
     try:
-        sub_process = root_me("sub" + "process")
-        time_module = root_me("time")
+        sub_process = rm_import("sub" + "process")
+        time_module = rm_import("time")
     except Exception as exc:
         print("import failed:", str(exc))
         mark_failure()

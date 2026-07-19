@@ -26,6 +26,7 @@ sys.path = [path for path in sys.path if path != selected_sdk_path]
 sys.path.insert(0, selected_sdk_path)
 
 from robomaster import blaster, robot  # noqa: E402
+from robomaster_lab_sdk import gui as lab_gui  # noqa: E402
 
 try:
     import av
@@ -39,7 +40,7 @@ except ImportError:  # pragma: no cover - optional GUI image display
     ImageTk = None
 
 LAB_DIR = APP_DIR / "lab"
-DEFAULT_DSP_NAME = robot.DEFAULT_DSP_NAME
+DEFAULT_DSP_NAME = lab_gui.DEFAULT_DSP_NAME
 
 
 class VideoDecoder(threading.Thread):
@@ -84,8 +85,8 @@ class LabApp(tk.Tk):
         self.title("RoboMaster S1 Lab Bridge")
         self.geometry("1120x760")
         self.args = args
-        self.robot: robot.Robot | None = None
-        self.bridge: robot.LabBridge | None = None
+        self.robot: lab_gui.Robot | None = None
+        self.bridge: lab_gui.LabBridge | None = None
         self.control_job: str | None = None
         self.current_action = None
         self.current_action_group: str | None = None
@@ -93,8 +94,11 @@ class LabApp(tk.Tk):
         self.last_lab_guid: str | None = None
         self.last_lab_sign: str | None = None
         self.last_lab_guid_marker: int | None = None
-        self.video_in: queue.Queue[bytes | None] = queue.Queue(maxsize=4096)
-        self.video_out: queue.Queue[object] = queue.Queue(maxsize=300)
+        # Keep raw H.264 buffering bounded and use the same decoded-frame
+        # capacity as DJI's LiveView implementation.  _poll_video drains this
+        # queue to the newest frame so a stalled UI does not replay old video.
+        self.video_in: queue.Queue[bytes | None] = queue.Queue(maxsize=256)
+        self.video_out: queue.Queue[object] = queue.Queue(maxsize=64)
         self.telemetry_queue: queue.Queue[object] = queue.Queue(maxsize=1)
         self.video_decoder = VideoDecoder(self.video_in, self.video_out)
         self.video_decoder.start()
@@ -236,7 +240,7 @@ class LabApp(tk.Tk):
         self.status_var.set("Program changed. Upload before Start.")
 
     def _selected_is_udp_bridge(self) -> bool:
-        return robot.is_bridge_capable(self.program_var.get())
+        return lab_gui.is_bridge_capable(self.program_var.get())
 
     def _build_control_panel(self, parent: ttk.Frame) -> ttk.LabelFrame:
         panel = ttk.LabelFrame(parent, text="Operation", padding=8)
@@ -310,7 +314,7 @@ class LabApp(tk.Tk):
 
     def _search_worker(self) -> None:
         try:
-            robots = robot.discover_robots(timeout=4.0)
+            robots = lab_gui.discover_robots(timeout=4.0)
         except Exception as exc:
             self.after(0, lambda: messagebox.showerror("Search", str(exc)))
             self.after(0, lambda: self.status_var.set("Search failed"))
@@ -326,11 +330,11 @@ class LabApp(tk.Tk):
             self.robot_ip_var.set(values[0])
         self.status_var.set(f"Found {len(values)} robot(s)" if values else "No robot found")
 
-    def _make_bridge(self) -> robot.LabBridge:
+    def _make_bridge(self) -> lab_gui.LabBridge:
         ip = self.robot_ip_var.get().strip()
         if not ip:
             raise RuntimeError("Robot IP is empty")
-        return robot.LabBridge(
+        return lab_gui.LabBridge(
             robot_ip=ip,
             control_port=self.control_port_var.get(),
             telemetry_port=self.telemetry_port_var.get(),
@@ -364,7 +368,7 @@ class LabApp(tk.Tk):
             if self.robot is None or not self.robot.connected:
                 raise RuntimeError("Connect to the robot before uploading the Lab program")
             selected_program = self.program_var.get().strip()
-            result = robot.upload_program(self.robot, LAB_DIR, selected_program)
+            result = lab_gui.upload_program(self.robot, LAB_DIR, selected_program)
             self.last_dsp_md5 = result.digest
             self.last_lab_guid = result.guid
             self.last_lab_sign = result.sign
@@ -427,7 +431,7 @@ class LabApp(tk.Tk):
 
     def _connect_worker(self) -> None:
         try:
-            lab_robot = robot.Robot(
+            lab_robot = lab_gui.Robot(
                 appid=self.appid_var.get(),
                 robot_ip=self.robot_ip_var.get().strip(),
                 local_ip=self.local_ip_var.get(),
@@ -508,9 +512,12 @@ class LabApp(tk.Tk):
     def begin_command(self, group: str, action) -> None:  # noqa: ANN001
         if self.robot is None or self.bridge is None:
             return
+        previous_group = self.current_action_group
         if self.control_job is not None:
             self.after_cancel(self.control_job)
             self.control_job = None
+        if previous_group is not None and previous_group != group:
+            self._stop_action_group(previous_group)
         self.current_action_group = group
         self.current_action = action
         self._send_current_command()
@@ -522,15 +529,27 @@ class LabApp(tk.Tk):
                 self.current_action()
             except Exception as exc:
                 self.log(f"[tx] {exc}")
-            if self.current_action is not None:
-                self.control_job = self.after(20, self._send_current_command)
 
     def _end_current_command(self, _event=None) -> None:  # noqa: ANN001
+        group = self.current_action_group
         self.current_action = None
         self.current_action_group = None
         if self.control_job is not None:
             self.after_cancel(self.control_job)
             self.control_job = None
+        if group is not None:
+            self._stop_action_group(group)
+
+    def _stop_action_group(self, group: str) -> None:
+        if self.robot is None or self.bridge is None:
+            return
+        try:
+            if group == "chassis":
+                self.robot.chassis.stop()
+            elif group == "gimbal":
+                self.robot.gimbal.stop()
+        except Exception as exc:
+            self.log(f"[{group}-stop] {exc}")
 
     def send_stop(self) -> None:
         if self.current_action_group == "chassis":
@@ -666,8 +685,8 @@ def main() -> int:
     parser.add_argument("--robot-ip", default="")
     parser.add_argument("--appid", default="b6359877")
     parser.add_argument("--local-ip", default="0.0.0.0")
-    parser.add_argument("--control-port", type=int, default=robot.DEFAULT_CONTROL_PORT)
-    parser.add_argument("--telemetry-port", type=int, default=robot.DEFAULT_TELEMETRY_PORT)
+    parser.add_argument("--control-port", type=int, default=lab_gui.DEFAULT_CONTROL_PORT)
+    parser.add_argument("--telemetry-port", type=int, default=lab_gui.DEFAULT_TELEMETRY_PORT)
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
     app = LabApp(args)

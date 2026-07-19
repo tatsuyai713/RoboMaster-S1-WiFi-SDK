@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .action import ImmediateAction
+from .unsupported import unsupported
 
 
 class RoboticArm:
@@ -8,19 +9,19 @@ class RoboticArm:
         self._robot = robot
 
     def reset(self) -> ImmediateAction:
-        return ImmediateAction()
+        return unsupported("robotic arm")
 
     def recenter(self) -> ImmediateAction:
-        return ImmediateAction()
+        return unsupported("robotic arm")
 
     def move(self, x: float = 0.0, y: float = 0.0) -> ImmediateAction:
-        return ImmediateAction()
+        return unsupported("robotic arm")
 
     def moveto(self, x: float = 0.0, y: float = 0.0) -> ImmediateAction:
-        return ImmediateAction()
+        return unsupported("robotic arm")
 
     def sub_position(self, freq: int = 5, callback=None, *args, **kwargs) -> bool:  # noqa: ANN001
-        return False
+        return unsupported("robotic arm")
 
     def unsub_position(self) -> bool:
-        return True
+        return unsupported("robotic arm")

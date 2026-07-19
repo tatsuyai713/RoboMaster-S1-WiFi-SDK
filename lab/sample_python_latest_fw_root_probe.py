@@ -1,4 +1,4 @@
-def root_me(module):
+def rm_import(module):
     builtins = rm_define.__dict__["__builtins__"]
     real_import = builtins["__import__"] if isinstance(builtins, dict) else builtins.__import__
     return real_import(module, globals(), locals(), [], 0)
@@ -25,8 +25,8 @@ def signal_failure():
 
 def start():
     try:
-        sub_process = root_me("subprocess")
-        time_module = root_me("time")
+        sub_process = rm_import("subprocess")
+        time_module = rm_import("time")
         proc = sub_process.Popen(
             "/system/bin/adb_en.sh",
             shell=True,

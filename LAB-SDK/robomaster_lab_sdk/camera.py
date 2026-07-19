@@ -23,13 +23,28 @@ class Camera:
                 pass
 
     def start_video_stream(self, display: bool = True, resolution: str = "720p") -> bool:
-        return True
+        return self._robot.base.camera.start_video_stream(display=display, resolution=resolution)
 
     def stop_video_stream(self) -> bool:
-        return True
+        return self._robot.base.camera.stop_video_stream()
 
-    def read_video_frame(self, timeout: float = 3.0) -> bytes | None:
-        try:
-            return self._frames.get(timeout=timeout)
-        except queue.Empty:
-            return None
+    def read_cv2_image(self, timeout: float = 3.0, strategy: str = "pipeline"):
+        return self._robot.base.camera.read_cv2_image(timeout=timeout, strategy=strategy)
+
+    def start_audio_stream(self) -> bool:
+        return self._robot.base.camera.start_audio_stream()
+
+    def stop_audio_stream(self) -> bool:
+        return self._robot.base.camera.stop_audio_stream()
+
+    def read_audio_frame(self, timeout: float = 1.0) -> bytes | None:
+        return self._robot.base.camera.read_audio_frame(timeout=timeout)
+
+    def record_audio(self, save_file: str = "output.wav", seconds: int = 5, sample_rate: int = 48000) -> bool:
+        return self._robot.base.camera.record_audio(save_file=save_file, seconds=seconds, sample_rate=sample_rate)
+
+    def take_photo(self) -> bool:
+        return self._robot.base.camera.take_photo()
+
+    def read_video_frame(self, timeout: float = 3.0, strategy: str = "pipeline") -> bytes | None:
+        return self._robot.base.camera.read_video_frame(timeout=timeout, strategy=strategy)

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from robomaster_s1_sdk.robot import Robot as _S1Robot
+from robomaster_s1_sdk.action import ImmediateAction
 
 FREE = "free"
 GIMBAL_LEAD = "gimbal_lead"
 CHASSIS_LEAD = "chassis_lead"
+
+
+class RobotPlaySoundAction(ImmediateAction):
+    pass
 
 
 class Robot(_S1Robot):

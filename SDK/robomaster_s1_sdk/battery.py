@@ -4,6 +4,7 @@ from __future__ import annotations
 class Battery:
     def __init__(self, robot) -> None:  # noqa: ANN001
         self._robot = robot
+        self._callback = None
 
     def get_battery(self) -> int | None:
         stats = getattr(self._robot, "_last_stats", None)
@@ -15,10 +16,19 @@ class Battery:
 
         def _call(stats):
             if stats.battery_percent is not None:
-                callback(stats.battery_percent, *args, **kw)
+                # adc/temperature/current are not present in the captured S1
+                # packet. Keep the official four-value callback shape.
+                callback((0, 0, 0, stats.battery_percent), *args, **kw)
 
+        if self._callback is not None:
+            self._robot.off("stats", self._callback)
+        self._callback = _call
         self._robot.on("stats", _call)
         return True
 
     def unsub_battery_info(self) -> bool:
-        return True
+        if self._callback is None:
+            return False
+        callback = self._callback
+        self._callback = None
+        return self._robot.off("stats", callback)

@@ -1,4 +1,4 @@
-def root_me(module):
+def rm_import(module):
     for provider_name in ("rm_define", "rm_log", "Random"):
         provider = globals().get(provider_name)
         if provider is None:
@@ -32,8 +32,8 @@ def show_failure():
 
 def start():
     try:
-        subprocess = root_me("subprocess")
-        time_module = root_me("time")
+        subprocess = rm_import("subprocess")
+        time_module = rm_import("time")
         output = subprocess.check_output(
             ["/data/python_files/bin/python", "-u", "-c", "print('root-child-ok')"]
         )

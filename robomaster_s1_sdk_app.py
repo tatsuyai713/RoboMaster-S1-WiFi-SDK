@@ -50,9 +50,10 @@ from robomaster_s1_sdk.protocol import (
 
 
 
-VIDEO_INPUT_BUFFER_CHUNKS = 4096
-VIDEO_OUTPUT_BUFFER_FRAMES = 300
-VIDEO_GUI_BUFFER_FRAMES = 300
+VIDEO_INPUT_BUFFER_CHUNKS = 512
+VIDEO_OUTPUT_BUFFER_FRAMES = 64
+VIDEO_GUI_BUFFER_FRAMES = 64
+EVENT_COMMAND_BUFFER = 64
 MIC_SAMPLE_RATE = 48000
 MIC_CHANNELS = 1
 MIC_SAMPLE_WIDTH_BYTES = 2
@@ -248,6 +249,8 @@ class SdkS1Worker(threading.Thread):
         events: queue.Queue[AppEvent],
         video_events: queue.Queue[bytes],
         commands: queue.Queue[str],
+        motion_commands: queue.Queue[str],
+        stop_commands: queue.Queue[str],
         stop_event: threading.Event,
         *,
         appid: str,
@@ -263,6 +266,8 @@ class SdkS1Worker(threading.Thread):
         self.events = events
         self.video_events = video_events
         self.commands = commands
+        self.motion_commands = motion_commands
+        self.stop_commands = stop_commands
         self.stop_event = stop_event
         self.appid = appid
         self.robot_ip = robot_ip
@@ -458,7 +463,24 @@ class SdkS1Worker(threading.Thread):
 
     def _consume_commands(self) -> None:
         assert self.robot is not None
+        priority_stop = None
         while True:
+            try:
+                priority_stop = self.stop_commands.get_nowait()
+            except queue.Empty:
+                break
+        if priority_stop is not None:
+            self._execute_command(priority_stop)
+
+        latest_motion = None
+        while True:
+            try:
+                latest_motion = self.motion_commands.get_nowait()
+            except queue.Empty:
+                break
+        if latest_motion is not None:
+            self._execute_command(latest_motion)
+        for _ in range(8):
             try:
                 name = self.commands.get_nowait()
             except queue.Empty:
@@ -590,12 +612,14 @@ class UnifiedApp(tk.Tk):
         self.args = args
         self.events: queue.Queue[AppEvent] = queue.Queue()
         self.video_events: queue.Queue[bytes] = queue.Queue(maxsize=VIDEO_GUI_BUFFER_FRAMES)
-        self.commands: queue.Queue[str] = queue.Queue()
+        self.commands: queue.Queue[str] = queue.Queue(maxsize=EVENT_COMMAND_BUFFER)
+        self.motion_commands: queue.Queue[str] = queue.Queue(maxsize=1)
+        self.stop_commands: queue.Queue[str] = queue.Queue(maxsize=1)
         self.stop_event = threading.Event()
         self.debug_enabled = threading.Event()
         self.worker: SdkS1Worker | None = None
         self.previous_session: bytes | None = None
-        self.pending_stop_job: str | None = None
+        self.current_action_group: str | None = None
         self.last_sent_action = ""
         self.qr_text = ""
         self.qr_photo = None
@@ -969,6 +993,16 @@ class UnifiedApp(tk.Tk):
                 break
         while True:
             try:
+                self.motion_commands.get_nowait()
+            except queue.Empty:
+                break
+        while True:
+            try:
+                self.stop_commands.get_nowait()
+            except queue.Empty:
+                break
+        while True:
+            try:
                 self.video_events.get_nowait()
             except queue.Empty:
                 break
@@ -983,6 +1017,8 @@ class UnifiedApp(tk.Tk):
             self.events,
             self.video_events,
             self.commands,
+            self.motion_commands,
+            self.stop_commands,
             self.stop_event,
             appid=appid,
             robot_ip=self.robot_ip_var.get().strip(),
@@ -1006,10 +1042,10 @@ class UnifiedApp(tk.Tk):
             self.status_var.set("Connect before changing Solo")
             return
         if self.solo_mode_var.get():
-            self.commands.put("enter_solo")
+            self._queue_event_command("enter_solo")
             self.status_var.set("Entering Solo")
         else:
-            self.commands.put("exit_solo")
+            self._queue_event_command("exit_solo")
             self.status_var.set("Leaving Solo")
         self.solo_button.configure(state="disabled")
 
@@ -1047,7 +1083,40 @@ class UnifiedApp(tk.Tk):
         if name == self.last_sent_action and not name.startswith("trigger_button"):
             return
         self.last_sent_action = name
-        self.commands.put(name)
+        if name.startswith("trigger_button"):
+            try:
+                self.commands.put_nowait(name)
+            except queue.Full:
+                self.status_var.set("Command queue busy; trigger was not sent")
+            return
+        while True:
+            try:
+                self.motion_commands.put_nowait(name)
+                return
+            except queue.Full:
+                try:
+                    self.motion_commands.get_nowait()
+                except queue.Empty:
+                    return
+
+    def _queue_event_command(self, command: str) -> bool:
+        try:
+            self.commands.put_nowait(command)
+            return True
+        except queue.Full:
+            self.status_var.set("Command queue busy; command was not sent")
+            return False
+
+    def _queue_stop_command(self, command: str) -> None:
+        while True:
+            try:
+                self.stop_commands.put_nowait(command)
+                return
+            except queue.Full:
+                try:
+                    self.stop_commands.get_nowait()
+                except queue.Empty:
+                    return
 
     def apply_video_settings(self) -> None:
         if self.worker is None:
@@ -1066,7 +1135,7 @@ class UnifiedApp(tk.Tk):
                 return
             actions.append(action)
         for action in actions:
-            self.commands.put(f"video_setting:{action}")
+            self._queue_event_command(f"video_setting:{action}")
         current_stream = self.video_size_var.get().split(" / ", 1)[0]
         label = f"{self.video_resolution_var.get()}, {self.video_antiflicker_var.get()}, 3D {self.video_3d_quality_var.get()}"
         self.video_size_var.set(f"{current_stream} / Applied {label}")
@@ -1086,7 +1155,7 @@ class UnifiedApp(tk.Tk):
         self.led_r_var.set(str(r))
         self.led_g_var.set(str(g))
         self.led_b_var.set(str(b))
-        self.commands.put(f"led_color:{r}:{g}:{b}")
+        self._queue_event_command(f"led_color:{r}:{g}:{b}")
         self.status_var.set(f"Sending LED RGB {r},{g},{b}")
 
     def apply_gun_type(self) -> None:
@@ -1098,7 +1167,7 @@ class UnifiedApp(tk.Tk):
         if gun_type is None:
             self.status_var.set("Unknown gun type")
             return
-        self.commands.put(f"gun_type:{gun_type}")
+        self._queue_event_command(f"gun_type:{gun_type}")
         self.status_var.set(f"Sending gun type {label}")
 
     def apply_voice_language(self) -> None:
@@ -1110,7 +1179,7 @@ class UnifiedApp(tk.Tk):
         if language_id is None:
             self.status_var.set("Unknown voice language")
             return
-        self.commands.put(f"voice_language:{language_id}")
+        self._queue_event_command(f"voice_language:{language_id}")
         self.status_var.set(f"Sending voice language {label}")
 
     def apply_volume(self) -> None:
@@ -1123,7 +1192,7 @@ class UnifiedApp(tk.Tk):
             messagebox.showerror("Invalid volume", "Volume は 0..80 の整数で入力してください。")
             return
         self.volume_var.set(str(volume))
-        self.commands.put(f"volume:{volume}")
+        self._queue_event_command(f"volume:{volume}")
         self.status_var.set(f"Sending volume {volume}")
 
     def press_mic(self) -> None:
@@ -1136,13 +1205,13 @@ class UnifiedApp(tk.Tk):
             except tk.TclError:
                 pass
             self.audio_tx_clear_job = None
-        self.commands.put("mic_start")
+        self._queue_event_command("mic_start")
         self.status_var.set("Mic start")
 
     def release_mic(self) -> None:
         if self.worker is None:
             return
-        self.commands.put("mic_stop")
+        self._queue_event_command("mic_stop")
         if self.audio_tx_clear_job is not None:
             try:
                 self.after_cancel(self.audio_tx_clear_job)
@@ -1155,7 +1224,7 @@ class UnifiedApp(tk.Tk):
         if self.worker is None:
             self.status_var.set("Connect before requesting audio RX")
             return
-        self.commands.put("audio_rx_request")
+        self._queue_event_command("audio_rx_request")
         self.status_var.set("Requesting audio RX")
 
     def apply_speed_setting(self) -> None:
@@ -1176,7 +1245,7 @@ class UnifiedApp(tk.Tk):
             self.custom_speed_vars[key].set(f"{value:.2f}" if "speed" in key else f"{value:.0f}")
             encoded_values.append(f"{key}={value:.6g}")
         suffix = ",".join(encoded_values) if preset == "Custom" else ""
-        self.commands.put(f"speed:{preset}:{suffix}")
+        self._queue_event_command(f"speed:{preset}:{suffix}")
         self.status_var.set(f"Sending speed {preset}")
 
     def _control_sensitivity_preset_changed(self) -> None:
@@ -1212,30 +1281,31 @@ class UnifiedApp(tk.Tk):
                 return
             self.gimbal_pitch_sensitivity_var.set(str(pitch))
             self.gimbal_yaw_sensitivity_var.set(str(yaw))
-        self.commands.put(f"control_sensitivity:{pitch}:{yaw}")
+        self._queue_event_command(f"control_sensitivity:{pitch}:{yaw}")
         self.status_var.set(f"Control sensitivity {preset} pitch={pitch} yaw={yaw}")
 
     def press_action(self, name: str) -> None:
-        if self.pending_stop_job is not None:
-            try:
-                self.after_cancel(self.pending_stop_job)
-            except tk.TclError:
-                pass
-            self.pending_stop_job = None
+        group = "gimbal" if name.startswith("gimbal_") else "chassis"
+        if name.startswith("trigger_button"):
+            group = "trigger"
+        if (
+            self.current_action_group is not None
+            and self.current_action_group != group
+        ):
+            self._queue_stop_command(
+                "gimbal_stop"
+                if self.current_action_group == "gimbal"
+                else "stop"
+            )
+        self.current_action_group = group
         self.send_action(name)
 
     def release_action(self, name: str) -> None:
-        if self.pending_stop_job is not None:
-            try:
-                self.after_cancel(self.pending_stop_job)
-            except tk.TclError:
-                pass
-        delay_ms = 90 if name.startswith("trigger_button") else 150
-        self.pending_stop_job = self.after(delay_ms, self._send_delayed_stop)
-
-    def _send_delayed_stop(self) -> None:
-        self.pending_stop_job = None
-        self.send_action("stop")
+        group = self.current_action_group
+        self.current_action_group = None
+        if name.startswith("trigger_button"):
+            return
+        self.send_action("gimbal_stop" if group == "gimbal" else "stop")
 
     def _toggle_debug(self) -> None:
         if self.debug_var.get():
