@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import ftplib
 
-from robomaster_s1_sdk import discover_robots
-from robomaster_s1_sdk.qr import build_wifi_qr_data
+from robomaster_lab_sdk.base import discover_robots
+from robomaster_lab_sdk.base.qr import build_wifi_qr_data
 
 from . import config
 

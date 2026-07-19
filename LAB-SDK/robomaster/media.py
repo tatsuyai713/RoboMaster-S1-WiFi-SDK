@@ -4,11 +4,12 @@ import queue
 import threading
 
 from robomaster_lab_sdk.media import Media
+from robomaster_lab_sdk.base.audio import OpusDecoder
 
 
 class _EventStreamConnection:
-    def __init__(self):
-        self._sock_queue = queue.Queue(maxsize=256)
+    def __init__(self, maxsize=64):
+        self._sock_queue = queue.Queue(maxsize=maxsize)
 
     def put(self, payload):
         try:
@@ -36,36 +37,13 @@ class _EventStreamConnection:
         self.put(b"")
 
 
-class _OpusDecoder:
-    def __init__(self):
-        try:
-            import av
-
-            self._av = av
-            self._codec = av.CodecContext.create("opus", "r")
-        except Exception:
-            self._av = None
-            self._codec = None
-
-    def decode(self, payload):
-        if self._codec is None or self._av is None:
-            return None
-        try:
-            frames = self._codec.decode(self._av.Packet(payload))
-            if not frames:
-                return None
-            return frames[0].to_ndarray().astype("<i2", copy=False).tobytes()
-        except Exception:
-            return None
-
-
 class LiveView:
     """Event-backed subset of the official LiveView used by robomaster_ros."""
 
     def __init__(self, robot):
         self._robot = robot
-        self._video_stream_conn = _EventStreamConnection()
-        self._audio_stream_conn = _EventStreamConnection()
+        self._video_stream_conn = _EventStreamConnection(maxsize=64)
+        self._audio_stream_conn = _EventStreamConnection(maxsize=32)
         self._video_decoder_thread = None
         self._audio_decoder_thread = None
         self._video_frame_queue = queue.Queue(maxsize=64)
@@ -75,7 +53,7 @@ class LiveView:
         self._video_frame_count = 0
         self._audio_frame_count = 0
         self._video_codec = None
-        self._audio_decoder = _OpusDecoder()
+        self._audio_decoder = OpusDecoder()
 
     def _on_video(self, payload):
         if self._video_streaming:
@@ -173,9 +151,13 @@ class LiveView:
             frame = self._audio_decoder.decode(data)
             if frame:
                 self._audio_frame_count += 1
+            try:
+                self._audio_frame_queue.put_nowait(frame)
+            except queue.Full:
                 try:
+                    self._audio_frame_queue.get_nowait()
                     self._audio_frame_queue.put_nowait(frame)
-                except queue.Full:
+                except (queue.Empty, queue.Full):
                     pass
 
     def stop(self):

@@ -16,44 +16,44 @@ RoboMaster S1の機体内Lab PythonとPCをSocketで接続し、DJI公式
 - S1機体内DSP: Python 3.6互換source
 - RoboMaster S1とPCが相互にUDP通信できるWi-Fi
 - FTP `21`、UDP `40923`、UDP `40924`を遮断しないfirewall
-- 同梱の直接通信SDK `SDK/`
 
 source treeから実行:
 
 ```bash
 python -m pip install -r requirements.txt
-PYTHONPATH=.:LAB-SDK:SDK python LAB-SDK/examples/basic_lab_control.py
+PYTHONPATH=.:LAB-SDK python LAB-SDK/examples/basic_lab_control.py
 ```
 
-packageとして入れる場合は、local dependencyを同時に指定します。
+packageとして入れる場合:
 
 ```bash
-python -m pip install ./SDK
-python -m pip install --no-deps ./LAB-SDK
+python -m pip install ./LAB-SDK
 ```
 
-`SDK`と`LAB-SDK`はどちらも`robomaster` facadeを含みます。LAB-SDKを使う環境では
-`LAB-SDK`側のfacadeが選択されるよう、LAB専用virtualenvで上記のinstall順または`PYTHONPATH`順を使用してください。
+LAB-SDKは`SDK/`、`robomaster_s1_sdk`、SOLO packageへ依存しません。AppID、QR、UDP/DUSS、
+camera/audioに必要な基礎transportは`robomaster_lab_sdk.base`内に独立して含まれます。
+両SDKは同名の`robomaster` facadeを持つため、同一environmentへ同時installせず、
+SOLO用とLAB用のvirtualenvを分けてください。
 
 ## 公式SDK形式の使用例
 
 ```python
 from robomaster import blaster, robot
 
-ep_robot = robot.Robot(
+s1_robot = robot.Robot(
     appid="b6359877",
     robot_ip="192.168.23.149",
 )
-ep_robot.initialize(conn_type="sta", proto_type="udp")
+s1_robot.initialize(conn_type="sta", proto_type="udp")
 
 try:
-    ep_robot.chassis.drive_speed(x=0.3, y=0, z=0, timeout=2)
-    ep_robot.gimbal.drive_speed(pitch_speed=0, yaw_speed=30)
-    ep_robot.blaster.fire(fire_type=blaster.INFRARED_FIRE, times=1)
+    s1_robot.chassis.drive_speed(x=0.3, y=0, z=0, timeout=2)
+    s1_robot.gimbal.drive_speed(pitch_speed=0, yaw_speed=30)
+    s1_robot.blaster.fire(fire_type=blaster.INFRARED_FIRE, times=1)
 finally:
-    ep_robot.chassis.stop()
-    ep_robot.gimbal.stop()
-    ep_robot.close()
+    s1_robot.chassis.stop()
+    s1_robot.gimbal.stop()
+    s1_robot.close()
 ```
 
 `Robot.initialize()`は通常、S1接続、Lab遷移、DSP生成・upload・start、PC側bridge起動までを自動実行します。
@@ -234,7 +234,7 @@ Lab管理、DSP選択、GUI helper、bridge直接操作は`robomaster_lab_sdk.gu
 | gimbal角度購読 | 実測部分対応 | pitch/yaw実測値、ground角は`None` |
 | blaster | 対応/部分対応 | IRはgun LED pulse、waterはphysical GUN |
 | LED | 対応/部分対応 | top/bottom component、effect、single LED |
-| camera video/audio | 部分対応 | Labではなく基礎Wi-Fi pathのraw stream |
+| camera video/audio | 対応/部分対応 | 独立基礎Wi-Fi pathのH.264、Opus、48 kHz mono PCM、WAV録音 |
 | battery/armor event | 部分対応 | 基礎Wi-Fi telemetry/eventを利用 |
 | vision command | 部分対応 | enable/disable/color/aim。認識結果callbackは未対応 |
 | distance sensor command | 部分対応 | measure enable/disable。距離結果callbackは未対応 |
@@ -296,4 +296,4 @@ Lab管理、DSP選択、GUI helper、bridge直接操作は`robomaster_lab_sdk.gu
 
 ## English summary
 
-LAB-SDK exposes the official RoboMaster Python module/component shape while executing allowlisted stock-S1 Lab commands through a robot-side bridge. Host TX/RX and robot TX/RX use separate processes; all Lab controller calls remain serialized in one robot-side scheduler. Scheduling uses monotonic absolute deadlines, commands are refreshed by the host, the robot watchdog stops motion after communication loss, and telemetry is sampled from the seven real chassis/gimbal getters shown above. Unsupported EP/Tello hardware raises an explicit SDK exception.
+LAB-SDK is a standalone package and does not import or depend on the SOLO SDK. It exposes the official RoboMaster Python module/component shape while executing allowlisted stock-S1 Lab commands through a robot-side bridge. Host TX/RX and robot TX/RX use separate processes; all Lab controller calls remain serialized in one robot-side scheduler. Scheduling uses monotonic absolute deadlines, commands are refreshed by the host, the robot watchdog stops motion after communication loss, and telemetry is sampled from the seven real chassis/gimbal getters shown above. Its independent base transport also provides H.264, Opus, decoded 48 kHz mono PCM, and bidirectional S1 audio. Unsupported EP/Tello hardware raises an explicit SDK exception.

@@ -46,7 +46,8 @@ class RosCompatibilityTests(unittest.TestCase):
         liveview = media.LiveView(_EventRobot())
         self.assertEqual(liveview._video_frame_queue.maxsize, 64)
         self.assertEqual(liveview._audio_frame_queue.maxsize, 32)
-        self.assertEqual(liveview._video_stream_conn._sock_queue.maxsize, 256)
+        self.assertEqual(liveview._video_stream_conn._sock_queue.maxsize, 64)
+        self.assertEqual(liveview._audio_stream_conn._sock_queue.maxsize, 32)
 
     def test_battery_callback_has_official_four_value_shape(self) -> None:
         robot = _BatteryRobot()

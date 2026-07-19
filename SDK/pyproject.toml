@@ -11,12 +11,12 @@ authors = [
   { name = "Tatsuya Ishikawa" }
 ]
 dependencies = [
+  "av>=11",
   "qrcode[pil]>=7.4",
 ]
 
 [project.optional-dependencies]
 app = [
-  "av>=11",
   "pillow>=10",
   "sounddevice>=0.4",
 ]

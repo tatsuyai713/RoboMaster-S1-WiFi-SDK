@@ -3,10 +3,12 @@ from __future__ import annotations
 import queue
 import threading
 
+from robomaster_s1_sdk.audio import OpusDecoder
+
 
 class _EventStreamConnection:
-    def __init__(self):
-        self._sock_queue = queue.Queue(maxsize=256)
+    def __init__(self, maxsize=64):
+        self._sock_queue = queue.Queue(maxsize=maxsize)
 
     def put(self, payload):
         try:
@@ -27,6 +29,9 @@ class _EventStreamConnection:
         except queue.Empty:
             return b""
 
+    def connect(self, addr=None, ip_proto="udp"):
+        return True
+
     def disconnect(self):
         self.put(b"")
 
@@ -36,8 +41,8 @@ class LiveView:
 
     def __init__(self, robot):
         self._robot = robot
-        self._video_stream_conn = _EventStreamConnection()
-        self._audio_stream_conn = _EventStreamConnection()
+        self._video_stream_conn = _EventStreamConnection(maxsize=64)
+        self._audio_stream_conn = _EventStreamConnection(maxsize=32)
         self._video_decoder_thread = None
         self._audio_decoder_thread = None
         self._video_frame_queue = queue.Queue(maxsize=64)
@@ -47,6 +52,7 @@ class LiveView:
         self._video_frame_count = 0
         self._audio_frame_count = 0
         self._video_codec = None
+        self._audio_decoder = OpusDecoder()
 
     def _on_video(self, payload):
         if self._video_streaming:
@@ -133,11 +139,18 @@ class LiveView:
             data = self._audio_stream_conn.read_buf()
             if not data:
                 continue
+            frame = self._audio_decoder.decode(data)
+            if not frame:
+                continue
             self._audio_frame_count += 1
             try:
-                self._audio_frame_queue.put_nowait(data)
+                self._audio_frame_queue.put_nowait(frame)
             except queue.Full:
-                pass
+                try:
+                    self._audio_frame_queue.get_nowait()
+                    self._audio_frame_queue.put_nowait(frame)
+                except (queue.Empty, queue.Full):
+                    pass
 
     def stop(self):
         if self._video_streaming:

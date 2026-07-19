@@ -55,10 +55,6 @@ VIDEO_OUTPUT_BUFFER_FRAMES = 64
 VIDEO_GUI_BUFFER_FRAMES = 64
 EVENT_COMMAND_BUFFER = 64
 MIC_SAMPLE_RATE = 48000
-MIC_CHANNELS = 1
-MIC_SAMPLE_WIDTH_BYTES = 2
-MIC_BLOCK_FRAMES = 480
-MIC_AUDIO_CHUNK_BYTES = MIC_BLOCK_FRAMES * MIC_CHANNELS * MIC_SAMPLE_WIDTH_BYTES
 VIDEO_RESOLUTION_ACTIONS = {
     "720p/30fps": "video_resolution_0403",
     "1080p/30fps": "video_resolution_0a03",
@@ -289,8 +285,12 @@ class SdkS1Worker(threading.Thread):
         self.video_stop_event = None
         self.video_process = None
         self.h264_file = None
-        self.mic_stream = None
         self.mic_active = False
+        self.audio_rx_queue: queue.Queue[bytes | None] = queue.Queue(
+            maxsize=32
+        )
+        self.audio_rx_stop_event = threading.Event()
+        self.audio_rx_thread: threading.Thread | None = None
 
     def log(self, message: str) -> None:
         if self.debug_enabled.is_set():
@@ -354,6 +354,7 @@ class SdkS1Worker(threading.Thread):
                 time.sleep(0.002)
         finally:
             self._stop_mic_stream()
+            self._stop_audio_rx_playback()
             if self.robot is not None:
                 try:
                     self.robot.close()
@@ -385,7 +386,85 @@ class SdkS1Worker(threading.Thread):
             self.events.put(AppEvent("robot_stats", robot_stats=RobotStatsTelemetry(battery_percent=value.battery_percent)))
 
     def _on_audio_rx(self, payload: bytes) -> None:
-        self.events.put(AppEvent("audio_level", audio_rx_level=audio_level_percent(payload)))
+        if self.robot is None:
+            return
+        pcm = self.robot.camera.decode_audio_opus(payload)
+        if not pcm:
+            return
+        self.events.put(
+            AppEvent(
+                "audio_level",
+                audio_rx_level=audio_level_percent(pcm),
+            )
+        )
+        self._queue_audio_rx_pcm(pcm)
+
+    def _queue_audio_rx_pcm(self, pcm: bytes) -> None:
+        if not pcm:
+            return
+        if self.audio_rx_thread is None or not self.audio_rx_thread.is_alive():
+            if sd is None:
+                return
+            self.audio_rx_stop_event.clear()
+            self.audio_rx_thread = threading.Thread(
+                target=self._audio_rx_output_loop,
+                name="robomaster-s1-sdk-audio-rx",
+                daemon=True,
+            )
+            self.audio_rx_thread.start()
+        try:
+            self.audio_rx_queue.put_nowait(pcm)
+        except queue.Full:
+            try:
+                self.audio_rx_queue.get_nowait()
+                self.audio_rx_queue.put_nowait(pcm)
+            except (queue.Empty, queue.Full):
+                pass
+
+    def _audio_rx_output_loop(self) -> None:
+        assert sd is not None
+        try:
+            stream = sd.RawOutputStream(
+                samplerate=MIC_SAMPLE_RATE,
+                channels=1,
+                dtype="int16",
+                blocksize=0,
+            )
+            stream.start()
+        except Exception as exc:
+            self.events.put(
+                AppEvent("error", message=f"Audio RX output failed: {exc}")
+            )
+            return
+        try:
+            while (
+                not self.stop_event.is_set()
+                and not self.audio_rx_stop_event.is_set()
+            ):
+                try:
+                    pcm = self.audio_rx_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if pcm is None:
+                    break
+                stream.write(pcm)
+        finally:
+            stream.stop()
+            stream.close()
+
+    def _stop_audio_rx_playback(self) -> None:
+        self.audio_rx_stop_event.set()
+        try:
+            self.audio_rx_queue.put_nowait(None)
+        except queue.Full:
+            try:
+                self.audio_rx_queue.get_nowait()
+                self.audio_rx_queue.put_nowait(None)
+            except (queue.Empty, queue.Full):
+                pass
+        if self.audio_rx_thread is not None:
+            self.audio_rx_thread.join(timeout=1.0)
+        self.audio_rx_thread = None
 
     def _on_armor_damage(self, event) -> None:
         self.events.put(AppEvent("log", message=f"[armor] {event.source} armor={event.armor} payload={event.payload_hex}"))
@@ -561,42 +640,22 @@ class SdkS1Worker(threading.Thread):
     def _start_mic_stream(self) -> None:
         if self.robot is None:
             return
-        if sd is None:
-            self.events.put(AppEvent("error", message="PC microphone capture requires: pip install sounddevice"))
-            return
         if self.mic_active:
             return
-        self.robot.audio.start_tx()
+        self.robot.audio.start_microphone(
+            callback=lambda data: self.events.put(
+                AppEvent(
+                    "audio_level",
+                    audio_tx_level=audio_level_percent(data),
+                )
+            )
+        )
         self.mic_active = True
 
-        def _callback(indata, frames: int, time_info, status) -> None:  # noqa: ANN001
-            data = bytes(indata)
-            if not data or self.robot is None:
-                return
-            self.events.put(AppEvent("audio_level", audio_tx_level=audio_level_percent(data)))
-            for offset in range(0, len(data), MIC_AUDIO_CHUNK_BYTES):
-                self.robot.audio.send_pcm_block(data[offset : offset + MIC_AUDIO_CHUNK_BYTES])
-
-        self.mic_stream = sd.RawInputStream(
-            samplerate=MIC_SAMPLE_RATE,
-            blocksize=MIC_AUDIO_CHUNK_BYTES // 2,
-            dtype="int16",
-            channels=1,
-            callback=_callback,
-        )
-        self.mic_stream.start()
-
     def _stop_mic_stream(self) -> None:
-        if self.mic_stream is not None:
-            try:
-                self.mic_stream.stop()
-                self.mic_stream.close()
-            except Exception:
-                pass
-            self.mic_stream = None
         if self.mic_active and self.robot is not None:
             try:
-                self.robot.audio.stop_tx()
+                self.robot.audio.stop_microphone()
             except Exception:
                 pass
         self.mic_active = False

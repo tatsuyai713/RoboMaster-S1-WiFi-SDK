@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 import ftplib
-from pathlib import Path
-import sys
 import threading
 import time
 from typing import Callable
@@ -13,13 +11,7 @@ from .config import DEFAULT_CONFIG, LabSdkConfig
 from .program import build_lab_bridge_dsp, upload_lab_dsp
 from .action import ImmediateAction
 from .unsupported import unsupported
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-BASE_SDK_DIR = PROJECT_ROOT / "SDK"
-if str(BASE_SDK_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_SDK_DIR))
-
-from robomaster_s1_sdk import Robot as BaseRobot  # noqa: E402
+from .base import Robot as BaseRobot
 
 
 class Robot:
@@ -219,8 +211,8 @@ class Robot:
             accepted = self.media.play_sound(sound_id) and accepted
         return ImmediateAction(accepted=accepted)
 
-    def play_audio(self, filename: str) -> ImmediateAction:
-        return unsupported("host audio-file playback")
+    def play_audio(self, filename: str):
+        return self.base.play_audio(filename)
 
     def close(self) -> None:
         self.stop_command_stream()

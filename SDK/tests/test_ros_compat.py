@@ -5,6 +5,7 @@ import inspect
 import unittest
 
 import robomaster
+from robomaster import media
 from robomaster_s1_sdk.armor import Armor
 from robomaster_s1_sdk.battery import Battery
 from robomaster_s1_sdk.chassis import Chassis
@@ -58,6 +59,12 @@ class RosCompatibilityTests(unittest.TestCase):
         self.assertEqual(action._percent, 100)
         self.assertTrue(action.has_succeeded)
         self.assertTrue(action.wait_for_completed(timeout=0))
+
+    def test_liveview_has_bounded_decoded_audio_path(self) -> None:
+        liveview = media.LiveView(_Robot())
+        self.assertEqual(liveview._audio_stream_conn._sock_queue.maxsize, 32)
+        self.assertEqual(liveview._audio_frame_queue.maxsize, 32)
+        self.assertTrue(hasattr(liveview, "_audio_decoder"))
 
 
 if __name__ == "__main__":

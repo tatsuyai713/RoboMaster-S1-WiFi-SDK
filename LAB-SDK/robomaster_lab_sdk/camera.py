@@ -40,6 +40,12 @@ class Camera:
     def read_audio_frame(self, timeout: float = 1.0) -> bytes | None:
         return self._robot.base.camera.read_audio_frame(timeout=timeout)
 
+    def read_audio_opus(self, timeout: float = 1.0) -> bytes | None:
+        return self._robot.base.camera.read_audio_opus(timeout=timeout)
+
+    def decode_audio_opus(self, packet: bytes) -> bytes | None:
+        return self._robot.base.camera.decode_audio_opus(packet)
+
     def record_audio(self, save_file: str = "output.wav", seconds: int = 5, sample_rate: int = 48000) -> bool:
         return self._robot.base.camera.record_audio(save_file=save_file, seconds=seconds, sample_rate=sample_rate)
 

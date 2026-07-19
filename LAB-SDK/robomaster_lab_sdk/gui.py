@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import time
 
-from robomaster_s1_sdk import DiscoveredRobot, discover_robots
-
+from .base import DiscoveredRobot, discover_robots
 from .bridge import DEFAULT_CONTROL_PORT, DEFAULT_TELEMETRY_PORT, LabBridge, LabTelemetry
 from .program import (
     lab_metadata_markers_for_dsp,
@@ -79,19 +78,19 @@ def load_lab_program(lab_dir: Path, program_name: str) -> tuple[str | bytes, str
     return dsp, guid, sign, title, full_marker, guid_marker, byte_count
 
 
-def upload_program(ep_robot: Robot, lab_dir: Path, program_name: str) -> LabUploadResult:
+def upload_program(s1_robot: Robot, lab_dir: Path, program_name: str) -> LabUploadResult:
     dsp, guid, sign, title, full_marker, guid_marker, byte_count = load_lab_program(lab_dir, program_name)
     if full_marker == 0x21:
-        ep_robot.send_duss(0x02, 0x09, 0x40, 0x3F, 0x4C, b"\x00")
+        s1_robot.send_duss(0x02, 0x09, 0x40, 0x3F, 0x4C, b"\x00")
         time.sleep(0.02)
-    ep_robot.send_lab_metadata(guid, sign, full_marker)
+    s1_robot.send_lab_metadata(guid, sign, full_marker)
     time.sleep(0.02)
-    ep_robot.send_lab_guid_metadata(guid, guid_marker)
+    s1_robot.send_lab_guid_metadata(guid, guid_marker)
     time.sleep(0.02)
     if full_marker == 0x21:
-        ep_robot.send_lab_upload_size(byte_count)
+        s1_robot.send_lab_upload_size(byte_count)
         time.sleep(0.02)
-    digest = upload_lab_dsp(ep_robot.robot_ip, dsp)
+    digest = upload_lab_dsp(s1_robot.robot_ip, dsp)
     return LabUploadResult(
         selected_program=program_name,
         title=title,

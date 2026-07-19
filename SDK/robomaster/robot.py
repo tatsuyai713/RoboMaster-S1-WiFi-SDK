@@ -18,8 +18,8 @@ class Robot(_S1Robot):
     Official examples can use:
 
         from robomaster import robot
-        ep_robot = robot.Robot(appid="b6359877")
-        ep_robot.initialize(conn_type="sta")
+        s1_robot = robot.Robot(appid="b6359877")
+        s1_robot.initialize(conn_type="sta")
 
     The S1-specific QR/AppID pairing options remain available as constructor
     keyword arguments.
